@@ -133,6 +133,131 @@ def load_food_database(xlsx_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # ----------------------------
 # SQLite persistence (with migrations)
 # ----------------------------
+
+# ----------------------------
+# JSON backup/restore helpers (mobile-friendly)
+# ----------------------------
+
+def _sqlite_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    info = conn.execute(f"PRAGMA table_info({table});").fetchall()
+    return [str(r[1]) for r in info]
+
+
+def make_json_backup(conn: sqlite3.Connection) -> dict:
+    """Dump all user-data tables to a JSON-serializable dict."""
+    tables = [
+        "diary_entries",
+        "burn_entries",
+        "food_macro_overrides",
+        "recipes",
+        "recipe_items",
+        "saved_meals",
+        "saved_meal_items",
+        "barcode_cache",
+        "weights",
+        "favourites",
+    ]
+
+    out: dict = {
+        "meta": {
+            "app": "UK Calorie Tracker",
+            "backup_version": 1,
+            "created_at_utc": datetime.utcnow().isoformat(timespec="seconds"),
+        },
+        "tables": {},
+    }
+
+    for t in tables:
+        try:
+            cols = _sqlite_table_columns(conn, t)
+            rows = conn.execute(f"SELECT * FROM {t};").fetchall()
+            out["tables"][t] = {
+                "columns": cols,
+                "rows": [dict(r) for r in rows],
+            }
+        except Exception:
+            # If a table doesn't exist yet, store it empty
+            out["tables"][t] = {"columns": [], "rows": []}
+
+    return out
+
+
+def restore_json_backup(conn: sqlite3.Connection, backup: dict) -> None:
+    """Restore from a backup created by make_json_backup().
+
+    This overwrites current data in the listed tables.
+    """
+    tables = backup.get("tables") or {}
+    if not isinstance(tables, dict):
+        raise ValueError("Invalid backup format: 'tables' missing")
+
+    # Ensure schema exists
+    _ = get_conn()
+
+    conn.execute("BEGIN;")
+    try:
+        # Delete in dependency-safe order (children first)
+        delete_order = [
+            "recipe_items",
+            "recipes",
+            "saved_meal_items",
+            "saved_meals",
+            "diary_entries",
+            "burn_entries",
+            "food_macro_overrides",
+            "barcode_cache",
+            "weights",
+            "favourites",
+        ]
+        for t in delete_order:
+            try:
+                conn.execute(f"DELETE FROM {t};")
+            except Exception:
+                pass
+
+        # Insert in parent-first order
+        insert_order = [
+            "recipes",
+            "recipe_items",
+            "saved_meals",
+            "saved_meal_items",
+            "diary_entries",
+            "burn_entries",
+            "food_macro_overrides",
+            "barcode_cache",
+            "weights",
+            "favourites",
+        ]
+
+        for t in insert_order:
+            tdata = tables.get(t) or {}
+            rows = tdata.get("rows") or []
+            if not rows:
+                continue
+
+            # Only insert columns that exist in current schema
+            current_cols = set(_sqlite_table_columns(conn, t))
+            # Maintain stable column order
+            cols = [c for c in (tdata.get("columns") or []) if c in current_cols]
+            if not cols:
+                # Fallback: derive columns from first row
+                cols = [c for c in rows[0].keys() if c in current_cols]
+
+            placeholders = ",".join(["?"] * len(cols))
+            col_sql = ",".join(cols)
+            sql = f"INSERT INTO {t}({col_sql}) VALUES ({placeholders});"
+
+            for r in rows:
+                vals = [r.get(c) for c in cols]
+                conn.execute(sql, vals)
+
+        conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK;")
+        raise
+
+
+# ----------------------------
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -1708,6 +1833,50 @@ with st.expander("Export diary (CSV)"):
             file_name=f"calorie_diary_{exp_start.isoformat()}_to_{exp_end.isoformat()}.csv",
             mime="text/csv",
         )
+
+with st.expander("Backup / restore (JSON — works on iPhone)"):
+    st.info(
+        "This backup format is designed to restore reliably from iPhone/iPad. "
+        "It exports all your entries, recipes, meals, weights, favourites, and barcode cache."
+    )
+
+    # Backup
+    try:
+        backup_obj = make_json_backup(conn)
+        backup_bytes = json.dumps(backup_obj, indent=2).encode("utf-8")
+        st.download_button(
+            "Download backup (JSON)",
+            data=backup_bytes,
+            file_name="uk_calorie_tracker_backup.json",
+            mime="application/json",
+        )
+        st.caption("Tip: Save this file to iCloud Drive or OneDrive so it’s easy to restore later.")
+    except Exception as e:
+        st.error(f"Couldn't create JSON backup: {e}")
+
+    st.divider()
+
+    # Restore
+    st.write("**Restore from JSON backup**")
+    st.caption(
+        "Upload a uk_calorie_tracker_backup.json file to restore your diary. "
+        "This will overwrite the current data on this hosted app."
+    )
+    uploaded_json = st.file_uploader(
+        "Upload uk_calorie_tracker_backup.json",
+        type=["json"],
+        key="restore_json",
+    )
+    confirm_json = st.checkbox("Yes, overwrite the current diary with this JSON backup", value=False, key="confirm_restore_json")
+    if uploaded_json and confirm_json and st.button("Restore JSON backup now", type="primary", key="btn_restore_json"):
+        try:
+            data = json.loads(uploaded_json.getvalue().decode("utf-8"))
+            restore_json_backup(conn, data)
+            st.success("Restored JSON backup. Reloading…")
+            st.rerun()
+        except Exception as e:
+            st.error(f"JSON restore failed: {e}")
+
 
 with st.expander("Backup / restore your full diary (SQLite file)"):
     st.warning(
