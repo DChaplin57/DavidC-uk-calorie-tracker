@@ -737,6 +737,34 @@ def portion_options_for_item(portions: pd.DataFrame, item: str) -> pd.DataFrame:
 # ----------------------------
 st.set_page_config(page_title="UK Calorie Tracker", page_icon="🥗", layout="wide")
 
+# ----------------------------
+# Optional: simple passcode gate (for a personal app)
+# Add to Streamlit Secrets:
+# [app]
+# passcode = "choose-a-secret"
+# ----------------------------
+app_pass = None
+try:
+    app_pass = st.secrets.get("app", {}).get("passcode")
+except Exception:
+    app_pass = None
+
+if app_pass:
+    if "authed" not in st.session_state:
+        st.session_state["authed"] = False
+
+    if not st.session_state["authed"]:
+        st.title("🔒 UK Calorie Tracker")
+        st.write("Enter your passcode to continue.")
+        entered = st.text_input("Passcode", type="password")
+        if st.button("Unlock"):
+            if entered == app_pass:
+                st.session_state["authed"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect passcode.")
+        st.stop()
+
 st.title("🥗 UK Calorie Tracker")
 st.caption("Lose It!-style daily calorie diary using your UK food database + recipes, saved meals, barcodes, macros, weight trends.")
 
@@ -963,76 +991,78 @@ with tab_add:
         st.session_state["selected_item"] = ""
 
     # Favourites & Recents (clickable)
-# Streamlit 1.52 supports dataframe row selection via on_select.
-fav_col, rec_col = st.columns(2)
+    # Streamlit 1.52 supports dataframe row selection via on_select.
+    fav_col, rec_col = st.columns(2)
 
-with fav_col:
-    st.write("**Favourite foods**")
-    favs = pd.read_sql_query("SELECT * FROM favourites ORDER BY created_at DESC", conn)
-    if favs.empty:
-        st.caption("No favourites yet. Select a food below, then favourite it.")
-    else:
-        fav_view = favs[["item", "created_at"]].rename(columns={"item": "Favourite", "created_at": "Added"})
-        fav_event = st.dataframe(
-            fav_view,
-            hide_index=True,
-            use_container_width=True,
-            selection_mode="single-row",
-            on_select="rerun",
-            key="fav_table",
+    with fav_col:
+        st.write("**Favourite foods**")
+        favs = pd.read_sql_query("SELECT * FROM favourites ORDER BY created_at DESC", conn)
+        if favs.empty:
+            st.caption("No favourites yet. Select a food below, then favourite it.")
+            picked_fav = None
+        else:
+            fav_view = favs[["item", "created_at"]].rename(columns={"item": "Favourite", "created_at": "Added"})
+            fav_event = st.dataframe(
+                fav_view,
+                hide_index=True,
+                use_container_width=True,
+                selection_mode="single-row",
+                on_select="rerun",
+                key="fav_table",
+            )
+            sel = getattr(fav_event, "selection", {}) or {}
+            rows = sel.get("rows", []) or []
+            picked_fav = None
+            if rows:
+                picked_fav = str(favs.iloc[int(rows[0])]["item"])
+                st.caption(f"Selected: {picked_fav}")
+
+            bcols = st.columns(2)
+            if bcols[0].button("Use selected", key="use_fav") and picked_fav:
+                st.session_state["selected_item"] = picked_fav
+                st.rerun()
+            if bcols[1].button("Remove selected", key="rm_fav") and picked_fav:
+                conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked_fav.strip().lower(),))
+                conn.commit()
+                if st.session_state.get("selected_item") == picked_fav:
+                    st.session_state["selected_item"] = ""
+                st.rerun()
+
+    with rec_col:
+        st.write("**Recent foods**")
+        recent = pd.read_sql_query(
+            """
+            SELECT item, MAX(created_at) AS last_used
+            FROM diary_entries
+            WHERE item NOT LIKE 'Recipe:%' AND item NOT LIKE 'Barcode:%' AND item NOT LIKE 'Quick add%'
+            GROUP BY item
+            ORDER BY last_used DESC
+            LIMIT 25
+            """,
+            conn,
         )
-        sel = getattr(fav_event, "selection", {}) or {}
-        rows = sel.get("rows", []) or []
-        picked = None
-        if rows:
-            picked = str(favs.iloc[int(rows[0])]["item"])
-            st.caption(f"Selected: {picked}")
-
-        bcols = st.columns(2)
-        if bcols[0].button("Use selected", key="use_fav") and picked:
-            st.session_state["selected_item"] = picked
-            st.rerun()
-        if bcols[1].button("Remove selected", key="rm_fav") and picked:
-            conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked.strip().lower(),))
-            conn.commit()
-            if st.session_state.get("selected_item") == picked:
-                st.session_state["selected_item"] = ""
-            st.rerun()
-
-with rec_col:
-    st.write("**Recent foods**")
-    recent = pd.read_sql_query(
-        """
-        SELECT item, MAX(created_at) AS last_used
-        FROM diary_entries
-        WHERE item NOT LIKE 'Recipe:%' AND item NOT LIKE 'Barcode:%' AND item NOT LIKE 'Quick add%'
-        GROUP BY item
-        ORDER BY last_used DESC
-        LIMIT 25
-        """,
-        conn,
-    )
-    if recent.empty:
-        st.caption("No recent foods yet.")
-    else:
-        rec_view = recent.rename(columns={"item": "Recent", "last_used": "Last used"})
-        rec_event = st.dataframe(
-            rec_view,
-            hide_index=True,
-            use_container_width=True,
-            selection_mode="single-row",
-            on_select="rerun",
-            key="rec_table",
-        )
-        sel = getattr(rec_event, "selection", {}) or {}
-        rows = sel.get("rows", []) or []
-        picked = None
-        if rows:
-            picked = str(recent.iloc[int(rows[0])]["item"])
-            st.caption(f"Selected: {picked}")
-        if st.button("Use selected", key="use_rec") and picked:
-            st.session_state["selected_item"] = picked
-            st.rerun()
+        if recent.empty:
+            st.caption("No recent foods yet.")
+            picked_rec = None
+        else:
+            rec_view = recent.rename(columns={"item": "Recent", "last_used": "Last used"})
+            rec_event = st.dataframe(
+                rec_view,
+                hide_index=True,
+                use_container_width=True,
+                selection_mode="single-row",
+                on_select="rerun",
+                key="rec_table",
+            )
+            sel = getattr(rec_event, "selection", {}) or {}
+            rows = sel.get("rows", []) or []
+            picked_rec = None
+            if rows:
+                picked_rec = str(recent.iloc[int(rows[0])]["item"])
+                st.caption(f"Selected: {picked_rec}")
+            if st.button("Use selected", key="use_rec") and picked_rec:
+                st.session_state["selected_item"] = picked_rec
+                st.rerun()
 
     st.divider()
 
@@ -1055,10 +1085,7 @@ with rec_col:
 
     # Default the selectbox to the current session selection if possible
     current = st.session_state.get("selected_item", "")
-    if current in options:
-        default_index = options.index(current)
-    else:
-        default_index = 0
+    default_index = options.index(current) if (current in options) else 0
 
     selected_item = st.selectbox(
         "Food",
@@ -1681,3 +1708,50 @@ with st.expander("Export diary (CSV)"):
             file_name=f"calorie_diary_{exp_start.isoformat()}_to_{exp_end.isoformat()}.csv",
             mime="text/csv",
         )
+
+with st.expander("Backup / restore your full diary (SQLite file)"):
+    st.warning(
+        "On Streamlit Community Cloud, local files like the SQLite diary can be lost if the app restarts. "
+        "Use this backup regularly if you rely on the hosted version."
+    )
+
+    # Backup
+    try:
+        if os.path.exists(SQLITE_PATH):
+            with open(SQLITE_PATH, "rb") as f:
+                db_bytes = f.read()
+            st.download_button(
+                "Download full diary backup (.sqlite)",
+                data=db_bytes,
+                file_name="calorie_diary.sqlite",
+                mime="application/x-sqlite3",
+            )
+        else:
+            st.caption("No local diary file exists yet.")
+    except Exception as e:
+        st.error(f"Couldn't read SQLite file for backup: {e}")
+
+    st.divider()
+
+    # Restore
+    st.write("**Restore from a backup**")
+    st.caption(
+        "Upload a previously downloaded calorie_diary.sqlite to restore your data. "
+        "This overwrites the current diary on this deployment."
+    )
+    uploaded_db = st.file_uploader("Upload calorie_diary.sqlite", type=["sqlite", "db"], key="restore_sqlite")
+    confirm = st.checkbox("Yes, overwrite the current diary with this backup", value=False)
+    if uploaded_db and confirm and st.button("Restore backup now", type="primary"):
+        try:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+            with open(SQLITE_PATH, "wb") as f:
+                f.write(uploaded_db.getbuffer())
+
+            st.success("Restored backup. Reloading…")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Restore failed: {e}")
