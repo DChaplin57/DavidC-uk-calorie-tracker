@@ -1296,10 +1296,25 @@ with tab_add:
                 )
                 choice = st.selectbox("Portion", options=p["_label"].tolist())
                 chosen = p[p["_label"] == choice].iloc[0]
-                grams = safe_float(chosen.get("Portion (g/ml)"), 0.0)
-                kcal = chosen.get("Energy (kcal) per portion/item")
-                kcal = safe_float(kcal, 0.0) if kcal is not None else kcal_for_grams(kcal100, grams)
-                source = f"portion: {chosen['Portion']}"
+
+                # Allow multiples of the selected portion (e.g., 2 slices of bread)
+                mult = st.number_input(
+                    "How many portions?",
+                    min_value=1.0,
+                    max_value=50.0,
+                    value=1.0,
+                    step=1.0,
+                    help="Use this to log multiple identical portions at once (e.g., 2 slices, 3 biscuits).",
+                    key="portion_multiplier",
+                )
+
+                grams_one = safe_float(chosen.get("Portion (g/ml)"), 0.0)
+                kcal_one = chosen.get("Energy (kcal) per portion/item")
+                kcal_one = safe_float(kcal_one, 0.0) if kcal_one is not None else kcal_for_grams(kcal100, grams_one)
+
+                grams = grams_one * float(mult)
+                kcal = kcal_one * float(mult)
+                source = f"portion: {chosen['Portion']} x{float(mult):g}"
 
         p_g, c_g, f_g = macros_for_grams(
             None if protein100 is None else safe_float(protein100, 0.0),
