@@ -1549,7 +1549,7 @@ with rec_col:
             st.success("Logged!")
             st.rerun()
 
-st.divider()
+    st.divider()
 
     left, right = st.columns([2, 1])
     with left:
