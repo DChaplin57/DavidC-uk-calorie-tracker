@@ -962,14 +962,15 @@ with tab_diary:
 
         st.divider()
         st.subheader("Quick actions")
-        # Copy yesterday
-        yday = diary_date - timedelta(days=1)
-        if st.button(f"Copy yesterday → {diary_date.isoformat()}"):
-            y_entries = read_entries(conn, yday)
-            if y_entries.empty:
-                st.warning(f"No entries on {yday.isoformat()}.")
+        # Copy from another day
+        st.write("**Copy from another day**")
+        copy_from = st.date_input("Copy entries from", value=diary_date - timedelta(days=1), key="copy_from_date")
+        if st.button(f"Copy {copy_from.isoformat()} → {diary_date.isoformat()}", key="btn_copy_from"):
+            src_entries = read_entries(conn, copy_from)
+            if src_entries.empty:
+                st.warning(f"No entries on {copy_from.isoformat()}.")
             else:
-                for _, e in y_entries.iterrows():
+                for _, e in src_entries.iterrows():
                     add_diary_entry(
                         conn,
                         entry_date=diary_date,
@@ -981,9 +982,9 @@ with tab_diary:
                         protein_g=None if pd.isna(e.get("protein_g")) else float(e.get("protein_g")),
                         carbs_g=None if pd.isna(e.get("carbs_g")) else float(e.get("carbs_g")),
                         fat_g=None if pd.isna(e.get("fat_g")) else float(e.get("fat_g")),
-                        source=(str(e.get("source") or "") + " | copied").strip(" |"),
+                        source=(str(e.get("source") or "") + f" | copied:{copy_from.isoformat()}").strip(" |"),
                     )
-                st.success(f"Copied {len(y_entries)} entries from {yday.isoformat()}.")
+                st.success(f"Copied {len(src_entries)} entries from {copy_from.isoformat()}.")
                 st.rerun()
 
         # Quick add calories
@@ -1144,7 +1145,13 @@ with tab_add:
 
             bcols = st.columns(2)
             if bcols[0].button("Use selected", key="use_fav") and picked_fav:
+                # Make sure the picked item appears in results by resetting filters/search
+                st.session_state["food_search_q"] = picked_fav
+                st.session_state["chosen_main"] = "All"
+                st.session_state["chosen_tag"] = "All"
+                st.session_state["shelf_only"] = False
                 st.session_state["selected_item"] = picked_fav
+                st.session_state["food_select"] = picked_fav
                 st.rerun()
             if bcols[1].button("Remove selected", key="rm_fav") and picked_fav:
                 conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked_fav.strip().lower(),))
@@ -1186,22 +1193,47 @@ with tab_add:
                 picked_rec = str(recent.iloc[int(rows[0])]["item"])
                 st.caption(f"Selected: {picked_rec}")
             if st.button("Use selected", key="use_rec") and picked_rec:
+                st.session_state["food_search_q"] = picked_rec
+                st.session_state["chosen_main"] = "All"
+                st.session_state["chosen_tag"] = "All"
+                st.session_state["shelf_only"] = False
                 st.session_state["selected_item"] = picked_rec
+                st.session_state["food_select"] = picked_rec
                 st.rerun()
 
     st.divider()
 
     left, right = st.columns([2, 1])
     with left:
-        q = st.text_input("Search foods", placeholder="e.g., chicken breast, basmati rice, olive oil")
+        q = st.text_input(
+            "Search foods",
+            placeholder="e.g., chicken breast, basmati rice, olive oil",
+            key="food_search_q",
+        )
     with right:
-        chosen_main = st.selectbox("Category", options=main_categories)
-        chosen_tag = st.selectbox("Cuisine tag", options=cuisine_tags)
-        shelf_only = st.toggle("Shelf-stable only", value=False)
+        chosen_main = st.selectbox("Category", options=main_categories, key="chosen_main")
+        chosen_tag = st.selectbox("Cuisine tag", options=cuisine_tags, key="chosen_tag")
+        shelf_only = st.toggle("Shelf-stable only", value=False, key="shelf_only")
 
     results = search_foods(ingredients_df, q, chosen_main, chosen_tag, shelf_only)
     st.caption(f"Showing {len(results)} matching foods")
-    st.dataframe(results, use_container_width=True, hide_index=True)
+    # Click a row to select it
+    res_event = st.dataframe(
+        results,
+        use_container_width=True,
+        hide_index=True,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="results_table",
+    )
+    sel = getattr(res_event, "selection", {}) or {}
+    rows = sel.get("rows", []) or []
+    if rows:
+        picked = str(results.iloc[int(rows[0])]["Item"])
+        st.session_state["selected_item"] = picked
+        # Also force the selectbox selection
+        st.session_state["food_select"] = picked
+        st.caption(f"Selected: {picked}")
 
     st.divider()
 
@@ -1300,11 +1332,11 @@ with tab_add:
                 # Allow multiples of the selected portion (e.g., 2 slices of bread)
                 mult = st.number_input(
                     "How many portions?",
-                    min_value=1.0,
+                    min_value=0.1,
                     max_value=50.0,
                     value=1.0,
-                    step=1.0,
-                    help="Use this to log multiple identical portions at once (e.g., 2 slices, 3 biscuits).",
+                    step=0.25,
+                    help="Use decimals for fractional portions (e.g., 0.5 slice, 1.5 biscuits).",
                     key="portion_multiplier",
                 )
 
