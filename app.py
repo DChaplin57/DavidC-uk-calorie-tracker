@@ -1297,7 +1297,7 @@ with tab_add:
                         "One-click portion (favourites)",
                         options=labels,
                         index=default_idx,
-                        key="ql_fav_portion",
+                        key=f"ql_fav_portion_{item_key}",
                     )
                     fav_mult = st.number_input(
                         "How many portions? (favourites)",
@@ -1305,9 +1305,9 @@ with tab_add:
                         max_value=50.0,
                         value=float(pref_mult),
                         step=0.25,
-                        key="ql_fav_mult",
+                        key=f"ql_fav_mult_{item_key}",
                     )
-                    if st.button("Reset saved one-click preference", key="reset_fav_pref"):
+                    if st.button("Reset saved one-click preference", key=f"reset_fav_pref_{item_key}"):
                         conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
                         conn.commit()
                         st.success("Saved one-click preference cleared.")
@@ -1409,7 +1409,7 @@ with tab_add:
                         "One-click portion (recents)",
                         options=labels,
                         index=default_idx,
-                        key="ql_rec_portion",
+                        key=f"ql_rec_portion_{item_key}",
                     )
                     rec_mult = st.number_input(
                         "How many portions? (recents)",
@@ -1417,9 +1417,9 @@ with tab_add:
                         max_value=50.0,
                         value=float(pref_mult),
                         step=0.25,
-                        key="ql_rec_mult",
+                        key=f"ql_rec_mult_{item_key}",
                     )
-                    if st.button("Reset saved one-click preference", key="reset_rec_pref"):
+                    if st.button("Reset saved one-click preference", key=f"reset_rec_pref_{item_key}"):
                         conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
                         conn.commit()
                         st.success("Saved one-click preference cleared.")
