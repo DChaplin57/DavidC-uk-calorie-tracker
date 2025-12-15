@@ -156,6 +156,7 @@ def make_json_backup(conn: sqlite3.Connection) -> dict:
         "barcode_cache",
         "weights",
         "favourites",
+        "quick_log_prefs",
     ]
 
     out: dict = {
@@ -208,6 +209,7 @@ def restore_json_backup(conn: sqlite3.Connection, backup: dict) -> None:
             "barcode_cache",
             "weights",
             "favourites",
+            "quick_log_prefs",
         ]
         for t in delete_order:
             try:
@@ -227,6 +229,7 @@ def restore_json_backup(conn: sqlite3.Connection, backup: dict) -> None:
             "barcode_cache",
             "weights",
             "favourites",
+            "quick_log_prefs",
         ]
 
         for t in insert_order:
@@ -941,13 +944,26 @@ conn.execute(
     )
     """
 )
+
+# Quick-log preferences (per food): which portion + default multiplier
+conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS quick_log_prefs (
+        item_key TEXT PRIMARY KEY,
+        item TEXT NOT NULL,
+        portion_label TEXT,
+        multiplier REAL NOT NULL DEFAULT 1.0,
+        updated_at TEXT NOT NULL
+    )
+    """
+)
 conn.commit()
 
 lookup = build_lookup(ingredients_df)
 
 # Tabs
-(tab_diary, tab_add, tab_recipes, tab_saved, tab_barcode, tab_weight, tab_trends) = st.tabs(
-    ["📅 Diary", "➕ Add food", "🍲 Recipes", "⭐ Saved meals", "🏷️ Barcode", "⚖️ Weight", "📈 Trends"]
+(tab_diary, tab_add, tab_recipes, tab_saved, tab_barcode, tab_weight, tab_trends, tab_help) = st.tabs(
+    ["📅 Diary", "➕ Add food", "🍲 Recipes", "⭐ Saved meals", "🏷️ Barcode", "⚖️ Weight", "📈 Trends", "📘 Help"]
 )
 
 
@@ -1123,6 +1139,112 @@ with tab_add:
     with fav_col:
         st.write("**Favourite foods**")
         favs = pd.read_sql_query("SELECT * FROM favourites ORDER BY created_at DESC", conn)
+
+        # Quick log controls (shared)
+        ql1, ql2 = st.columns(2)
+        with ql1:
+            quick_date = st.date_input("Quick log date", value=date.today(), key="quick_log_date")
+        with ql2:
+            quick_meal = st.selectbox("Quick log meal", options=MEALS, index=1, key="quick_log_meal")
+        st.caption("One-click log: logs **1 typical portion** if defined, otherwise logs **100g**. You can adjust the default below.")
+        ql_mode = st.radio("Default one-click amount", options=["1 portion if available", "100g"], horizontal=True, key="quick_log_mode")
+
+        def _get_quicklog_pref(item_key: str) -> Optional[dict]:
+            row = conn.execute(
+                "SELECT portion_label, multiplier FROM quick_log_prefs WHERE item_key = ?",
+                (item_key,),
+            ).fetchone()
+            if not row:
+                return None
+            return {"portion_label": row[0], "multiplier": safe_float(row[1], 1.0)}
+
+        def _set_quicklog_pref(item_key: str, item_name: str, portion_label: Optional[str], mult: float):
+            conn.execute(
+                """
+                INSERT INTO quick_log_prefs(item_key, item, portion_label, multiplier, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(item_key) DO UPDATE SET
+                    item=excluded.item,
+                    portion_label=excluded.portion_label,
+                    multiplier=excluded.multiplier,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    item_key,
+                    item_name,
+                    portion_label,
+                    float(mult),
+                    datetime.utcnow().isoformat(timespec="seconds"),
+                ),
+            )
+            conn.commit()
+
+        def _one_click_log(item_name: str, portion_label: Optional[str] = None, mult: float = 1.0):
+            if not item_name:
+                return
+            r = lookup.get(item_name)
+            if r is None:
+                st.warning("Food not found in database.")
+                return
+            kcal100 = safe_float(r.get("Energy (kcal)"), 0.0)
+            item_key = str(r.get("_key") or item_name.strip().lower())
+
+            # Macros from DB + override if present
+            protein100 = r.get("Protein_g_100g") if "Protein_g_100g" in r.index else None
+            carbs100 = r.get("Carbs_g_100g") if "Carbs_g_100g" in r.index else None
+            fat100 = r.get("Fat_g_100g") if "Fat_g_100g" in r.index else None
+            override = get_macro_override(conn, item_key)
+            if override:
+                protein100 = override.get("Protein_g_100g")
+                carbs100 = override.get("Carbs_g_100g")
+                fat100 = override.get("Fat_g_100g")
+
+            grams = 100.0
+            kcal = kcal_for_grams(kcal100, grams)
+            source = "one-click:100g"
+
+            if ql_mode == "1 portion if available":
+                p = portion_options_for_item(portions_df, item_name)
+                if not p.empty:
+                    p = p.copy()
+                    p["_label"] = p.apply(
+                        lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g",
+                        axis=1,
+                    )
+                    if portion_label and portion_label in p["_label"].tolist():
+                        chosen = p[p["_label"] == portion_label].iloc[0]
+                    else:
+                        chosen = p.iloc[0]
+
+                    grams_one = safe_float(chosen.get("Portion (g/ml)"), 0.0)
+                    kcal_one = chosen.get("Energy (kcal) per portion/item")
+                    kcal_one = safe_float(kcal_one, 0.0) if kcal_one is not None else kcal_for_grams(kcal100, grams_one)
+
+                    grams = grams_one * float(mult)
+                    kcal = kcal_one * float(mult)
+                    source = f"one-click:portion:{str(chosen.get('Portion'))} x{float(mult):g}"
+
+            p_g, c_g, f_g = macros_for_grams(
+                None if protein100 is None else safe_float(protein100, 0.0),
+                None if carbs100 is None else safe_float(carbs100, 0.0),
+                None if fat100 is None else safe_float(fat100, 0.0),
+                grams,
+            )
+
+            add_diary_entry(
+                conn,
+                entry_date=quick_date,
+                meal=quick_meal,
+                item=item_name,
+                grams=float(grams),
+                kcal_per_100g=float(kcal100),
+                kcal=float(kcal),
+                protein_g=p_g,
+                carbs_g=c_g,
+                fat_g=f_g,
+                source=source,
+            )
+
         if favs.empty:
             st.caption("No favourites yet. Select a food below, then favourite it.")
             picked_fav = None
@@ -1143,7 +1265,7 @@ with tab_add:
                 picked_fav = str(favs.iloc[int(rows[0])]["item"])
                 st.caption(f"Selected: {picked_fav}")
 
-            bcols = st.columns(2)
+            bcols = st.columns(3)
             if bcols[0].button("Use selected", key="use_fav") and picked_fav:
                 # Make sure the picked item appears in results by resetting filters/search
                 st.session_state["food_search_q"] = picked_fav
@@ -1153,7 +1275,72 @@ with tab_add:
                 st.session_state["selected_item"] = picked_fav
                 st.session_state["food_select"] = picked_fav
                 st.rerun()
-            if bcols[1].button("Remove selected", key="rm_fav") and picked_fav:
+            # Portion picker for one-click logging
+            fav_portion_label = None
+            fav_mult = 1.0
+            if picked_fav and ql_mode == "1 portion if available":
+                # Load saved preference if present
+                r = lookup.get(picked_fav)
+                item_key = str((r.get("_key") if r is not None else None) or picked_fav.strip().lower())
+                pref = _get_quicklog_pref(item_key)
+                pref_label = (pref or {}).get("portion_label")
+                pref_mult = safe_float((pref or {}).get("multiplier"), 1.0)
+
+                # Build portion list
+                pf = portion_options_for_item(portions_df, picked_fav)
+                if not pf.empty:
+                    pf = pf.copy()
+                    pf["_label"] = pf.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g", axis=1)
+                    labels = pf["_label"].tolist()
+                    default_idx = labels.index(pref_label) if (pref_label in labels) else 0
+                    fav_portion_label = st.selectbox(
+                        "One-click portion (favourites)",
+                        options=labels,
+                        index=default_idx,
+                        key="ql_fav_portion",
+                    )
+                    fav_mult = st.number_input(
+                        "How many portions? (favourites)",
+                        min_value=0.1,
+                        max_value=50.0,
+                        value=float(pref_mult),
+                        step=0.25,
+                        key="ql_fav_mult",
+                    )
+                    if st.button("Reset saved one-click preference", key="reset_fav_pref"):
+                        conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
+                        conn.commit()
+                        st.success("Saved one-click preference cleared.")
+                        st.rerun()
+                else:
+                    fav_mult = float(pref_mult)
+                pf = portion_options_for_item(portions_df, picked_fav)
+                if not pf.empty:
+                    pf = pf.copy()
+                    pf["_label"] = pf.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g", axis=1)
+                    fav_portion_label = st.selectbox(
+                        "One-click portion (favourites)",
+                        options=pf["_label"].tolist(),
+                        key="ql_fav_portion",
+                    )
+                    fav_mult = st.number_input(
+                        "How many portions? (favourites)",
+                        min_value=0.1,
+                        max_value=50.0,
+                        value=1.0,
+                        step=0.25,
+                        key="ql_fav_mult",
+                    )
+
+            if bcols[1].button("⚡ Log selected", key="log_fav") and picked_fav:
+                r = lookup.get(picked_fav)
+                item_key = str((r.get("_key") if r is not None else None) or picked_fav.strip().lower())
+                # Save preference (portion + multiplier) for next time
+                _set_quicklog_pref(item_key, picked_fav, fav_portion_label, float(fav_mult))
+                _one_click_log(picked_fav, portion_label=fav_portion_label, mult=float(fav_mult))
+                st.success("Logged!")
+                st.rerun()
+            if bcols[2].button("Remove selected", key="rm_fav") and picked_fav:
                 conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked_fav.strip().lower(),))
                 conn.commit()
                 if st.session_state.get("selected_item") == picked_fav:
@@ -1192,13 +1379,77 @@ with tab_add:
             if rows:
                 picked_rec = str(recent.iloc[int(rows[0])]["item"])
                 st.caption(f"Selected: {picked_rec}")
-            if st.button("Use selected", key="use_rec") and picked_rec:
+
+            rcols = st.columns(2)
+            if rcols[0].button("Use selected", key="use_rec") and picked_rec:
                 st.session_state["food_search_q"] = picked_rec
                 st.session_state["chosen_main"] = "All"
                 st.session_state["chosen_tag"] = "All"
                 st.session_state["shelf_only"] = False
                 st.session_state["selected_item"] = picked_rec
                 st.session_state["food_select"] = picked_rec
+                st.rerun()
+            # Portion picker for one-click logging
+            rec_portion_label = None
+            rec_mult = 1.0
+            if picked_rec and ql_mode == "1 portion if available":
+                r = lookup.get(picked_rec)
+                item_key = str((r.get("_key") if r is not None else None) or picked_rec.strip().lower())
+                pref = _get_quicklog_pref(item_key)
+                pref_label = (pref or {}).get("portion_label")
+                pref_mult = safe_float((pref or {}).get("multiplier"), 1.0)
+
+                pr = portion_options_for_item(portions_df, picked_rec)
+                if not pr.empty:
+                    pr = pr.copy()
+                    pr["_label"] = pr.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g", axis=1)
+                    labels = pr["_label"].tolist()
+                    default_idx = labels.index(pref_label) if (pref_label in labels) else 0
+                    rec_portion_label = st.selectbox(
+                        "One-click portion (recents)",
+                        options=labels,
+                        index=default_idx,
+                        key="ql_rec_portion",
+                    )
+                    rec_mult = st.number_input(
+                        "How many portions? (recents)",
+                        min_value=0.1,
+                        max_value=50.0,
+                        value=float(pref_mult),
+                        step=0.25,
+                        key="ql_rec_mult",
+                    )
+                    if st.button("Reset saved one-click preference", key="reset_rec_pref"):
+                        conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
+                        conn.commit()
+                        st.success("Saved one-click preference cleared.")
+                        st.rerun()
+                else:
+                    rec_mult = float(pref_mult)
+                pr = portion_options_for_item(portions_df, picked_rec)
+                if not pr.empty:
+                    pr = pr.copy()
+                    pr["_label"] = pr.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g", axis=1)
+                    rec_portion_label = st.selectbox(
+                        "One-click portion (recents)",
+                        options=pr["_label"].tolist(),
+                        key="ql_rec_portion",
+                    )
+                    rec_mult = st.number_input(
+                        "How many portions? (recents)",
+                        min_value=0.1,
+                        max_value=50.0,
+                        value=1.0,
+                        step=0.25,
+                        key="ql_rec_mult",
+                    )
+
+            if rcols[1].button("⚡ Log selected", key="log_rec") and picked_rec:
+                r = lookup.get(picked_rec)
+                item_key = str((r.get("_key") if r is not None else None) or picked_rec.strip().lower())
+                _set_quicklog_pref(item_key, picked_rec, rec_portion_label, float(rec_mult))
+                _one_click_log(picked_rec, portion_label=rec_portion_label, mult=float(rec_mult))
+                st.success("Logged!")
                 st.rerun()
 
     st.divider()
@@ -1856,6 +2107,111 @@ with tab_trends:
             w = weights_df.set_index("entry_date")["weight_kg"].asfreq("D").interpolate(limit_direction="both")
             w_roll = w.rolling(7, min_periods=1).mean()
             st.line_chart(pd.DataFrame({"weight": w, "weight_7d_avg": w_roll}))
+
+
+# ----------------------------
+# HELP TAB (Beginner user manual)
+# ----------------------------
+with tab_help:
+    st.header("User manual (beginner-friendly)")
+    st.markdown(
+        """
+## 1) What this app is
+This is a simple calorie diary similar to Lose It!:
+- Log foods by **grams** or **typical portions**
+- Track **calories** (and macros when available)
+- Track **burned calories** (exercise/activity/daily living)
+- Save **recipes** and **saved meals**
+- Log packaged foods by **barcode**
+- Track **weight** and view **trends**
+
+## 2) Using the app on laptop + iPhone
+- Open the **same Streamlit URL** on both devices.
+- Everything you log goes into the hosted diary database.
+
+### Passcode (optional)
+If you set a passcode in Streamlit Secrets, you must enter it to use the app.
+
+## 3) Diary tab (📅)
+### Daily totals
+At the top you’ll see:
+- **Consumed** = food calories
+- **Burned** = calories you logged as exercise/activity
+- **Net** = Consumed − Burned
+- **Remaining** = Budget − Net
+
+### Copy from another day
+Use **Copy entries from** to copy any previous day into the selected date.
+
+### Quick-add calories
+Use this for quick entries when you don’t want to search a food (e.g., “coffee”).
+
+### Burned calories
+Use **Log calories burned** to subtract calories (exercise/activity/daily living).
+
+## 4) Add food tab (➕)
+This is the main logging screen.
+
+### Search and filters
+- Use the search box to find foods.
+- Filter by Category/Cuisine/Shelf-stable.
+- You can click a row in the results table to select it.
+
+### Log by grams
+Choose **Grams** and enter the amount.
+
+### Log by typical portion
+Choose **Typical portion** and select a portion (e.g., “1 slice”).
+- You can log multiple or fractional portions (e.g., 2, 1.5, 0.5).
+
+### Favourites and Recents
+- Click a row to select it.
+- **Use selected** loads it into the logging controls.
+- **⚡ Log selected** logs immediately.
+
+#### One-click logging preferences (new)
+If a food has portions defined, you can choose:
+- Which portion to use (e.g., “1 slice”)
+- How many portions (e.g., 2 or 0.5)
+
+When you click **⚡ Log selected**, the app remembers this for next time.
+
+**Resetting a saved preference**
+If your usual portion changes, click **Reset saved one-click preference** under the portion controls. This clears the saved default for that food.
+
+## 5) Recipes tab (🍲)
+- Create a recipe and set servings.
+- Add ingredients (grams).
+- Log servings eaten to the diary.
+
+## 6) Saved meals tab (⭐)
+- Create a saved meal template.
+- Add items.
+- Log the whole saved meal to the diary with one click (optionally scaled).
+
+## 7) Barcode tab (🏷️)
+- Enter a barcode to fetch nutrition from Open Food Facts.
+- Log grams eaten.
+
+## 8) Weight tab (⚖️)
+- Enter your weight (kg) for a date.
+- View a weight chart.
+
+## 9) Trends tab (📈)
+Choose a date range to see:
+- Consumed/burned/net calories
+- 7-day averages
+- Weekly totals
+- Weight trend if you have weights logged
+
+## 10) Backup/restore (JSON — works on iPhone)
+Use **Backup / restore (JSON — works on iPhone)** at the bottom:
+- **Download backup (JSON)** regularly
+- **Restore** by uploading the JSON file
+
+Tip: store the JSON file in iCloud Drive / OneDrive so you can restore from phone if needed.
+        """
+    )
 
 
 # ----------------------------
