@@ -501,6 +501,28 @@ def delete_burn_entry(conn: sqlite3.Connection, burn_id: int) -> None:
     conn.commit()
 
 
+def upsert_apple_move_burn(conn: sqlite3.Connection, entry_date: date, kcal_burned: float) -> None:
+    """Create/replace a single 'Apple Move' burn entry for a date."""
+    conn.execute(
+        "DELETE FROM burn_entries WHERE entry_date = ? AND name = ?",
+        (entry_date.isoformat(), "Apple Move"),
+    )
+    conn.execute(
+        """
+        INSERT INTO burn_entries(entry_date, category, name, kcal_burned, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            entry_date.isoformat(),
+            "Daily living",
+            "Apple Move",
+            float(kcal_burned),
+            datetime.utcnow().isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+
+
 def read_burn_entries(conn: sqlite3.Connection, entry_date: date) -> pd.DataFrame:
     return pd.read_sql_query(
         "SELECT * FROM burn_entries WHERE entry_date = ? ORDER BY category, id",
@@ -902,6 +924,18 @@ with st.sidebar:
     xlsx_path = st.text_input("Food database (xlsx)", value=DEFAULT_DB_PATH)
     daily_budget = st.number_input("Daily calorie budget", min_value=0, max_value=20000, value=2000, step=50)
 
+    st.subheader("Apple Move")
+    st.caption("Optional: log Apple Fitness 'Move' calories as burned calories (with a conservative factor).")
+    apple_move_factor = st.number_input(
+        "Apple Move factor",
+        min_value=0.0,
+        max_value=1.5,
+        value=0.5,
+        step=0.05,
+        help="Example: enter 0.5 to count 50% of Move calories.",
+        key="apple_move_factor",
+    )
+
     st.subheader("Macro targets (daily)")
     protein_target = st.number_input("Protein target (g)", min_value=0, max_value=1000, value=120, step=5)
     carbs_target = st.number_input("Carbs target (g)", min_value=0, max_value=2000, value=250, step=10)
@@ -1061,6 +1095,48 @@ with tab_diary:
 
     # Log burned calories
     with st.expander("Log calories burned (exercise / activity / daily living)"):
+        st.write("**Apple Move quick-entry (optional)**")
+        am1, am2, am3, am4 = st.columns([1, 1, 1, 1])
+        with am1:
+            move_kcal = st.number_input(
+                "Apple Move (kcal)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=0.0,
+                step=10.0,
+                key="apple_move_kcal",
+                help="Enter today's Move calories from Apple Fitness.",
+            )
+        with am2:
+            move_factor = st.number_input(
+                "Factor",
+                min_value=0.0,
+                max_value=1.5,
+                value=float(st.session_state.get("apple_move_factor", 0.5)),
+                step=0.05,
+                key="apple_move_factor_inline",
+                help="Counts Move × factor as burned calories (conservative by default).",
+            )
+        with am3:
+            move_burn = float(move_kcal) * float(move_factor)
+            st.metric("Will log", f"{move_burn:.0f} kcal")
+        with am4:
+            if st.button("Save/Update Apple Move", key="apple_move_save"):
+                if move_kcal <= 0:
+                    # If they set to 0, remove the entry entirely
+                    conn.execute(
+                        "DELETE FROM burn_entries WHERE entry_date = ? AND name = ?",
+                        (diary_date.isoformat(), "Apple Move"),
+                    )
+                    conn.commit()
+                    st.success("Apple Move removed for this day.")
+                else:
+                    upsert_apple_move_burn(conn, diary_date, float(move_burn))
+                    st.success("Apple Move saved for this day.")
+                st.rerun()
+
+        st.divider()
+        st.write("**Manual burn entry**")
         bc1, bc2, bc3 = st.columns([1, 2, 1])
         with bc1:
             bcat = st.selectbox("Category", options=["Exercise", "Activity", "Daily living"], key="burn_cat")
@@ -1069,7 +1145,7 @@ with tab_diary:
         with bc3:
             bkcal = st.number_input("kcal burned", min_value=0.0, max_value=5000.0, value=200.0, step=10.0, key="burn_kcal")
 
-        if st.button("Add burned calories", key="burn_add"):
+        if st.button("Add burned calories", key="burn_add"): 
             add_burn_entry(conn, diary_date, bcat, bname.strip() or bcat, float(bkcal))
             st.success("Added.")
             st.rerun()
@@ -1473,7 +1549,7 @@ with rec_col:
             st.success("Logged!")
             st.rerun()
 
-    st.divider()
+st.divider()
 
     left, right = st.columns([2, 1])
     with left:
@@ -2157,7 +2233,7 @@ If you set a passcode in Streamlit Secrets, you must enter it to use the app.
 ### Daily totals
 At the top you’ll see:
 - **Consumed** = food calories
-- **Burned** = calories you logged as exercise/activity
+- **Burned** = calories you logged as exercise/activity/daily living
 - **Net** = Consumed − Burned
 - **Remaining** = Budget − Net
 
@@ -2169,6 +2245,13 @@ Use this for quick entries when you don’t want to search a food (e.g., “coff
 
 ### Burned calories
 Use **Log calories burned** to subtract calories (exercise/activity/daily living).
+
+#### Apple Move quick-entry (optional)
+If you use Apple Fitness, you can enter your daily **Move** calories and a **factor** (e.g., 0.5). The app logs:
+- **Burned = Move × factor**
+This is a conservative way to avoid overestimating burn.
+- Click **Save/Update Apple Move** to replace the entry for that day.
+- Set Move to **0** and save to remove it for that day.
 
 ## 4) Add food tab (➕)
 This is the main logging screen.
