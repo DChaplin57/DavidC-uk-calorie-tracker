@@ -906,13 +906,18 @@ if app_pass:
     if not st.session_state["authed"]:
         st.title("🔒 UK Calorie Tracker")
         st.write("Enter your passcode to continue.")
-        entered = st.text_input("Passcode", type="password")
-        if st.button("Unlock"):
+
+        with st.form("passcode_form"):
+            entered = st.text_input("Passcode", type="password")
+            submitted = st.form_submit_button("Unlock")
+
+        if submitted:
             if entered == app_pass:
                 st.session_state["authed"] = True
                 st.rerun()
             else:
                 st.error("Incorrect passcode.")
+
         st.stop()
 
 st.title("🥗 UK Calorie Tracker")
