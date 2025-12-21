@@ -655,6 +655,55 @@ def delete_recipe(conn: sqlite3.Connection, recipe_id: int) -> None:
     conn.commit()
 
 
+def update_recipe(conn: sqlite3.Connection, recipe_id: int, name: str, servings: float, notes: str = "") -> None:
+    """Update recipe metadata (name/servings/notes)."""
+    conn.execute(
+        "UPDATE recipes SET name = ?, servings = ?, notes = ? WHERE id = ?",
+        (name.strip(), float(servings), notes.strip(), int(recipe_id)),
+    )
+    conn.commit()
+
+
+def duplicate_recipe(conn: sqlite3.Connection, recipe_id: int, new_name: str) -> int:
+    """Duplicate a recipe and all its ingredients. Returns the new recipe id."""
+    r = conn.execute("SELECT name, servings, notes FROM recipes WHERE id = ?", (int(recipe_id),)).fetchone()
+    if not r:
+        raise ValueError("Recipe not found")
+
+    new_id = create_recipe(conn, new_name.strip(), float(r["servings"]), str(r["notes"] or ""))
+
+    items = conn.execute(
+        """
+        SELECT item, grams, kcal_per_100g, kcal, protein_g, carbs_g, fat_g, source
+        FROM recipe_items
+        WHERE recipe_id = ?
+        """,
+        (int(recipe_id),),
+    ).fetchall()
+
+    for it in items:
+        conn.execute(
+            """
+            INSERT INTO recipe_items(recipe_id, item, grams, kcal_per_100g, kcal, protein_g, carbs_g, fat_g, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(new_id),
+                it["item"],
+                float(it["grams"]),
+                float(it["kcal_per_100g"]),
+                float(it["kcal"]),
+                it["protein_g"],
+                it["carbs_g"],
+                it["fat_g"],
+                it["source"],
+            ),
+        )
+
+    conn.commit()
+    return int(new_id)
+
+
 # ----------------------------
 # Saved meals
 # ----------------------------
@@ -906,18 +955,13 @@ if app_pass:
     if not st.session_state["authed"]:
         st.title("🔒 UK Calorie Tracker")
         st.write("Enter your passcode to continue.")
-
-        with st.form("passcode_form"):
-            entered = st.text_input("Passcode", type="password")
-            submitted = st.form_submit_button("Unlock")
-
-        if submitted:
+        entered = st.text_input("Passcode", type="password")
+        if st.button("Unlock"):
             if entered == app_pass:
                 st.session_state["authed"] = True
                 st.rerun()
             else:
                 st.error("Incorrect passcode.")
-
         st.stop()
 
 st.title("🥗 UK Calorie Tracker")
@@ -1765,6 +1809,56 @@ with tab_recipes:
 
             recipe_row = recipes_df[recipes_df["id"] == selected_recipe_id].iloc[0]
             servings = safe_float(recipe_row["servings"], 1.0)
+
+            # ---- Edit / duplicate recipe (metadata) ----
+            with st.expander("Edit recipe details (name / servings / notes)"):
+                en1, en2 = st.columns([2, 1])
+                with en1:
+                    edit_name = st.text_input(
+                        "Recipe name",
+                        value=str(recipe_row.get("name") or ""),
+                        key=f"edit_recipe_name_{selected_recipe_id}",
+                    )
+                with en2:
+                    edit_servings = st.number_input(
+                        "Servings",
+                        min_value=0.1,
+                        max_value=1000.0,
+                        value=float(servings if servings > 0 else 1.0),
+                        step=0.5,
+                        key=f"edit_recipe_servings_{selected_recipe_id}",
+                    )
+
+                edit_notes = st.text_area(
+                    "Notes (optional)",
+                    value=str(recipe_row.get("notes") or ""),
+                    key=f"edit_recipe_notes_{selected_recipe_id}",
+                )
+
+                ec1, ec2 = st.columns([1, 1])
+                with ec1:
+                    if st.button("Save changes", key=f"btn_save_recipe_{selected_recipe_id}"):
+                        if not edit_name.strip():
+                            st.warning("Recipe name cannot be blank.")
+                        else:
+                            update_recipe(conn, selected_recipe_id, edit_name, float(edit_servings), edit_notes)
+                            st.success("Recipe updated.")
+                            st.rerun()
+
+                with ec2:
+                    dup_name_default = f"{str(recipe_row.get('name') or '').strip()} (copy)"
+                    dup_name = st.text_input(
+                        "Duplicate as",
+                        value=dup_name_default,
+                        key=f"dup_recipe_name_{selected_recipe_id}",
+                    )
+                    if st.button("Duplicate recipe", key=f"btn_dup_recipe_{selected_recipe_id}"):
+                        if not dup_name.strip():
+                            st.warning("Please enter a name for the duplicated recipe.")
+                        else:
+                            new_id = duplicate_recipe(conn, selected_recipe_id, dup_name)
+                            st.success(f"Duplicated recipe as '{dup_name}' (id {new_id}).")
+                            st.rerun()
 
             items_df = read_recipe_items(conn, selected_recipe_id)
             total_kcal = float(items_df["kcal"].sum()) if not items_df.empty else 0.0
