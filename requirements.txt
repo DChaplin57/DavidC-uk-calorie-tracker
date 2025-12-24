@@ -1,6 +1,6 @@
 streamlit==1.52.1
+streamlit-extras
 pandas
+numpy
 openpyxl
 requests
-pillow
-pyzbar
