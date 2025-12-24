@@ -45,6 +45,7 @@ import streamlit as st
 
 # External (network)
 import requests
+import re
 
 
 # ----------------------------
@@ -84,28 +85,20 @@ def inject_global_css() -> None:
             box-shadow: 0 1px 0 rgba(0,0,0,0.08);
           }
 
-          /* Button styling (Streamlit 'type' primary/secondary) */
-          div.stButton > button[data-testid="stBaseButton-primary"],
-          div.stDownloadButton > button {
-            background: #1D64FF !important;
-            color: #fff !important;
-            border: 1px solid rgba(0,0,0,0.10) !important;
+          /* Button styling (shape only; colours handled by cb()) */
+          div.stButton > button,
+          div.stDownloadButton > button,
+          div.stFormSubmitButton > button {
             border-radius: 12px !important;
             font-weight: 700 !important;
-          }
-          div.stButton > button[data-testid="stBaseButton-secondary"]{
-            background: #8E44FF !important;
-            color: #fff !important;
             border: 1px solid rgba(0,0,0,0.10) !important;
-            border-radius: 12px !important;
-            font-weight: 650 !important;
           }
           div.stButton > button:hover,
-          div.stDownloadButton > button:hover {
+          div.stDownloadButton > button:hover,
+          div.stFormSubmitButton > button:hover {
             filter: brightness(0.96);
           }
-
-          /* Reduce excessive whitespace around dataframes */
+/* Reduce excessive whitespace around dataframes */
           div[data-testid="stDataFrame"] { margin-top: 0.25rem; }
         </style>
         """,
@@ -118,6 +111,164 @@ def banner(title: str, kind: str) -> None:
         f'<div class="section-banner" style="background:{color}">{title}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ----------------------------
+# Multi-colour buttons (stable, per-function)
+# ----------------------------
+try:
+    from streamlit_extras.stylable_container import stylable_container  # type: ignore
+    _STYLABLE_CONTAINER_ERR = ""
+except Exception as _e:  # pragma: no cover
+    stylable_container = None  # type: ignore
+    _STYLABLE_CONTAINER_ERR = repr(_e)
+
+BUTTON_ROLE_COLORS = {
+    "log": "#34C759",      # green
+    "add": "#1D64FF",      # vivid blue
+    "edit": "#AF52DE",     # purple
+    "delete": "#FF3B30",   # red
+    "search": "#00B8D9",   # cyan
+    "fav": "#FF9500",      # orange
+    "info": "#5AC8FA",     # light blue
+    "neutral": "#8E8E93",  # grey
+    "create": "#3366FF",
+}
+
+def _infer_button_role(label: str) -> str:
+    t = (label or "").strip().lower()
+    if any(k in t for k in ["log", "save weight", "save/update", "save/update", "save/update apple move", "add burned"]):
+        return "log"
+    if any(k in t for k in ["remove", "delete", "clear", "unfavourite", "unfavorite"]):
+        return "delete"
+    if any(k in t for k in ["favourite", "favorite", "☆", "⭐"]):
+        return "fav"
+    if any(k in t for k in ["search", "filter", "scan", "barcode", "lookup"]):
+        return "search"
+    if any(k in t for k in ["reset", "cancel", "close"]):
+        return "neutral"
+    if any(k in t for k in ["create", "new", "add", "use selected", "copy"]):
+        return "add"
+    return "info"
+
+# ----------------------------
+# Multi-colour button engine (robust: styles ALL buttons incl. column.button)
+# ----------------------------
+from streamlit.delta_generator import DeltaGenerator
+
+_DG_BUTTON_ORIG = None
+
+def _ensure_button_patch():
+    """Patch Streamlit's DeltaGenerator.button so EVERY button (including col.button) is styled.
+
+    We scope CSS to a per-button wrapper container using its `st-key-...` class.
+    """
+    global _DG_BUTTON_ORIG
+    if _DG_BUTTON_ORIG is not None:
+        return  # already patched
+
+    _DG_BUTTON_ORIG = DeltaGenerator.button
+
+    def _patched_button(self: DeltaGenerator, label, *args, **kwargs):
+        # Allow an optional `role=` kwarg (used by our cb wrapper)
+        role = kwargs.pop("role", None)
+        if role is None:
+            role = _infer_button_role(str(label))
+
+        # Keep caller key if provided; otherwise generate a unique (per-run) key.
+        key = kwargs.get("key")
+        if key is None:
+            n = int(st.session_state.get("_cb_auto_i", 0)) + 1
+            st.session_state["_cb_auto_i"] = n
+            slug = re.sub(r"[^a-zA-Z0-9_]+", "_", (str(label) or "btn")).strip("_")[:40] or "btn"
+            key = f"cb_auto_{n}_{slug}"
+            kwargs["key"] = key
+
+        color = BUTTON_ROLE_COLORS.get(role, BUTTON_ROLE_COLORS.get("info", "#5AC8FA"))
+
+        wrap_key = f"btnwrap__{key}"
+        wrap_class = f"st-key-{wrap_key}"
+
+        # Build wrapper in the CURRENT context (self can be a column, container, etc.)
+        # Use self.container so layout stays correct.
+        self.markdown(
+            f"""<style>
+            /* Shape defaults (no colour here) */
+            div.{wrap_class} div.stButton > button {{
+                border-radius: 12px !important;
+                font-weight: 700 !important;
+                padding: 0.45rem 0.85rem !important;
+                border: 1px solid rgba(255,255,255,0.12) !important;
+            }}
+            /* Colour for this button */
+            div.{wrap_class} div.stButton > button {{
+                background: {color} !important;
+                color: white !important;
+            }}
+            div.{wrap_class} div.stButton > button:hover {{
+                filter: brightness(0.95);
+            }}
+            </style>""",
+            unsafe_allow_html=True,
+        )
+        wrapper = self.container(key=wrap_key)
+
+        # Render the real Streamlit button inside the wrapper (call original to avoid recursion)
+        return _DG_BUTTON_ORIG(wrapper, label, *args, **kwargs)
+
+    DeltaGenerator.button = _patched_button
+
+# Ensure patch is applied early
+_ensure_button_patch()
+
+def cb(label: str, *args, role: str | None = None, key: str | None = None, **kwargs) -> bool:
+    """Coloured button helper.
+
+    - Uses `stylable_container` when available to apply per-role colours.
+    - Never forwards unknown kwargs (like `role`) to Streamlit's `st.button`.
+    - If `key` is omitted, generates a stable-enough unique key for this run.
+    """
+    # Determine / generate a key (Streamlit needs this for stable widget identity).
+    btn_key = key or kwargs.get("key")
+    if not btn_key:
+        # Auto key: label slug + monotonic counter (per run). This is fine for buttons.
+        counter = st.session_state.get("_cb_autokey_counter", 0) + 1
+        st.session_state["_cb_autokey_counter"] = counter
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", (label or "btn")).strip("_")[:40] or "btn"
+        btn_key = f"cb_{slug}_{counter}"
+    kwargs["key"] = btn_key
+
+    # Consume `role` without passing it to Streamlit.
+    btn_role = role or _infer_button_role(label)
+
+    # Choose colour.
+    color = BUTTON_ROLE_COLORS.get(btn_role, BUTTON_ROLE_COLORS.get("neutral", "#8E8E93"))
+
+    # If stylable_container isn't available, fall back to normal Streamlit button.
+    if stylable_container is None:
+        return st.button(label, *args, **kwargs)
+
+    # Apply scoped CSS inside a stylable container.
+    with stylable_container(
+        key=f"btnwrap__{btn_key}",
+        css_styles=f"""
+        div.stButton > button {{
+            background: {color} !important;
+            color: white !important;
+            border: 1px solid rgba(255,255,255,0.12) !important;
+            border-radius: 12px !important;
+            font-weight: 700 !important;
+            padding: 0.45rem 0.85rem !important;
+        }}
+        div.stButton > button:hover {{
+            filter: brightness(0.95);
+        }}
+        div.stButton > button:disabled {{
+            opacity: 0.55;
+        }}
+        """,
+    ):
+        return st.button(label, *args, **kwargs)
 
 def render_dataframe(
     df: pd.DataFrame,
@@ -1055,6 +1206,20 @@ def portion_options_for_item(portions: pd.DataFrame, item: str) -> pd.DataFrame:
 st.set_page_config(page_title="UK Calorie Tracker", page_icon="🥗", layout="wide")
 inject_global_css()
 
+# Button-colour system status (indicator)
+try:
+    if stylable_container is None:
+        st.sidebar.warning("🎨 Multi-colour buttons: OFF (streamlit-extras not available)")
+        st.sidebar.caption("Install with: `python3 -m pip install streamlit-extras`")
+        if _STYLABLE_CONTAINER_ERR:
+            st.sidebar.caption(f"Import error: {_STYLABLE_CONTAINER_ERR}")
+    else:
+        st.sidebar.success("🎨 Multi-colour buttons: ON")
+except Exception:
+    # If sidebar isn't ready for some reason, fail silently.
+    pass
+
+
 
 # ----------------------------
 # Optional: simple passcode gate (for a personal app)
@@ -1189,7 +1354,7 @@ with tab_diary:
         # Copy from another day
         st.write("**Copy from another day**")
         copy_from = st.date_input("Copy entries from", value=diary_date - timedelta(days=1), key="copy_from_date")
-        if st.button(f"Copy {copy_from.isoformat()} → {diary_date.isoformat()}", key="btn_copy_from"):
+        if cb(f"Copy {copy_from.isoformat()} → {diary_date.isoformat()}", key="btn_copy_from"):
             src_entries = read_entries(conn, copy_from)
             if src_entries.empty:
                 st.warning(f"No entries on {copy_from.isoformat()}.")
@@ -1216,7 +1381,7 @@ with tab_diary:
             qa_meal = st.selectbox("Meal", options=MEALS, index=3, key="qa_meal")
             qa_kcal = st.number_input("Calories to add", min_value=0.0, max_value=5000.0, value=100.0, step=10.0, key="qa_kcal")
             qa_note = st.text_input("Note (optional)", placeholder="e.g., Coffee + biscuit", key="qa_note")
-            if st.button("Add quick calories", key="qa_btn"):
+            if cb("Add quick calories", key="qa_btn"):
                 add_diary_entry(
                     conn,
                     entry_date=diary_date,
@@ -1295,7 +1460,7 @@ with tab_diary:
             move_burn = float(move_kcal) * float(move_factor)
             st.metric("Will log", f"{move_burn:.0f} kcal")
         with am4:
-            if st.button("Save/Update Apple Move", key="apple_move_save"):
+            if cb("Save/Update Apple Move", key="apple_move_save"):
                 if move_kcal <= 0:
                     # If they set to 0, remove the entry entirely
                     conn.execute(
@@ -1319,7 +1484,7 @@ with tab_diary:
         with bc3:
             bkcal = st.number_input("kcal burned", min_value=0.0, max_value=5000.0, value=200.0, step=10.0, key="burn_kcal")
 
-        if st.button("Add burned calories", key="burn_add", type="primary"): 
+        if cb("Add burned calories", key="burn_add", type="primary"): 
             add_burn_entry(conn, diary_date, bcat, bname.strip() or bcat, float(bkcal))
             st.success("Added.")
             st.rerun()
@@ -1332,7 +1497,7 @@ with tab_diary:
         render_dataframe(bdisp_show, table_key="burn_entries", header_color=BRIGHT_PALETTE["quick"], height=220, hide_index=True, width='stretch')
         with st.expander("Delete a burn entry"):
             bid = st.selectbox("Burn entry id", options=bdisp["id"].tolist(), key="burn_del_id")
-            if st.button("Delete burn entry", key="burn_del_btn"):
+            if cb("Delete burn entry", key="burn_del_btn"):
                 delete_burn_entry(conn, int(bid))
                 st.success("Deleted.")
                 st.rerun()
@@ -1370,7 +1535,7 @@ with tab_diary:
         with st.expander("Delete an entry"):
             entry_ids = display["id"].tolist()
             to_delete = st.selectbox("Select entry id", options=entry_ids)
-            if st.button("Delete", type="secondary"):
+            if cb("Delete", type="secondary"):
                 delete_diary_entry(conn, int(to_delete))
                 st.success("Deleted.")
                 st.rerun()
@@ -1556,14 +1721,15 @@ with tab_add:
                 st.caption(f"Selected: {picked_fav}")
 
             bcols = st.columns(3)
-            if bcols[0].button("Use selected", key="use_fav") and picked_fav:
-                st.session_state["food_search_q"] = picked_fav
-                st.session_state["chosen_main"] = "All"
-                st.session_state["chosen_tag"] = "All"
-                st.session_state["shelf_only"] = False
-                st.session_state["selected_item"] = picked_fav
-                st.session_state["food_select"] = picked_fav
-                st.rerun()
+            with bcols[0]:
+                if cb("Use selected", key="use_fav", role="add") and picked_fav:
+                    st.session_state["food_search_q"] = picked_fav
+                    st.session_state["chosen_main"] = "All"
+                    st.session_state["chosen_tag"] = "All"
+                    st.session_state["shelf_only"] = False
+                    st.session_state["selected_item"] = picked_fav
+                    st.session_state["food_select"] = picked_fav
+                    st.rerun()
 
             fav_portion_label = None
             fav_mult = 1.0
@@ -1594,7 +1760,7 @@ with tab_add:
                         step=0.25,
                         key=f"ql_fav_mult_{item_key}",
                     )
-                    if st.button("Reset saved one-click preference", key=f"reset_fav_pref_{item_key}"):
+                    if cb("Reset saved one-click preference", key=f"reset_fav_pref_{item_key}"):
                         conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
                         conn.commit()
                         st.success("Saved one-click preference cleared.")
@@ -1602,18 +1768,20 @@ with tab_add:
                 else:
                     fav_mult = float(pref_mult)
 
-            if bcols[1].button("⚡ Log selected", key="log_fav", type="primary") and picked_fav:
-                r = lookup.get(picked_fav)
-                item_key = str((r.get("_key") if r is not None else None) or picked_fav.strip().lower())
-                _set_quicklog_pref(item_key, picked_fav, fav_portion_label, float(fav_mult))
-                _one_click_log(picked_fav, portion_label=fav_portion_label, mult=float(fav_mult))
-                st.success("Logged!")
-                st.rerun()
+            with bcols[1]:
+                if cb("⚡ Log selected", key="log_fav", role="log") and picked_fav:
+                    r = lookup.get(picked_fav)
+                    item_key = str((r.get("_key") if r is not None else None) or picked_fav.strip().lower())
+                    _set_quicklog_pref(item_key, picked_fav, fav_portion_label, float(fav_mult))
+                    _one_click_log(picked_fav, portion_label=fav_portion_label, mult=float(fav_mult))
+                    st.success("Logged!")
+                    st.rerun()
 
-            if bcols[2].button("Remove selected", key="rm_fav") and picked_fav:
-                conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked_fav.strip().lower(),))
-                conn.commit()
-                st.rerun()
+            with bcols[2]:
+                if cb("Remove selected", key="rm_fav", role="delete") and picked_fav:
+                    conn.execute("DELETE FROM favourites WHERE item_key = ?", (picked_fav.strip().lower(),))
+                    conn.commit()
+                    st.rerun()
 
 
     # ----------------------------
@@ -1661,7 +1829,7 @@ with tab_add:
                 r = lookup.get(picked_rec)
                 fav_key = str((r.get("_key") if r is not None else None) or picked_rec.strip().lower())
                 exists = conn.execute("SELECT 1 FROM favourites WHERE item_key = ?", (fav_key,)).fetchone() is not None
-                if st.button("⭐ Unfavourite" if exists else "☆ Favourite selected", key=f"fav_from_recent_{fav_key}"):
+                if cb("⭐ Unfavourite" if exists else "☆ Favourite selected", key=f"fav_from_recent_{fav_key}"):
                     if exists:
                         conn.execute("DELETE FROM favourites WHERE item_key = ?", (fav_key,))
                     else:
@@ -1673,14 +1841,15 @@ with tab_add:
                     st.rerun()
 
             rcols = st.columns(2)
-            if rcols[0].button("Use selected", key="use_rec") and picked_rec:
-                st.session_state["food_search_q"] = picked_rec
-                st.session_state["chosen_main"] = "All"
-                st.session_state["chosen_tag"] = "All"
-                st.session_state["shelf_only"] = False
-                st.session_state["selected_item"] = picked_rec
-                st.session_state["food_select"] = picked_rec
-                st.rerun()
+            with rcols[0]:
+                if cb("Use selected", key="use_rec", role="add") and picked_rec:
+                    st.session_state["food_search_q"] = picked_rec
+                    st.session_state["chosen_main"] = "All"
+                    st.session_state["chosen_tag"] = "All"
+                    st.session_state["shelf_only"] = False
+                    st.session_state["selected_item"] = picked_rec
+                    st.session_state["food_select"] = picked_rec
+                    st.rerun()
 
             rec_portion_label = None
             rec_mult = 1.0
@@ -1711,7 +1880,7 @@ with tab_add:
                         step=0.25,
                         key=f"ql_rec_mult_{item_key}",
                     )
-                    if st.button("Reset saved one-click preference", key=f"reset_rec_pref_{item_key}"):
+                    if cb("Reset saved one-click preference", key=f"reset_rec_pref_{item_key}"):
                         conn.execute("DELETE FROM quick_log_prefs WHERE item_key = ?", (item_key,))
                         conn.commit()
                         st.success("Saved one-click preference cleared.")
@@ -1719,13 +1888,14 @@ with tab_add:
                 else:
                     rec_mult = float(pref_mult)
 
-            if rcols[1].button("⚡ Log selected", key="log_rec", type="primary") and picked_rec:
-                r = lookup.get(picked_rec)
-                item_key = str((r.get("_key") if r is not None else None) or picked_rec.strip().lower())
-                _set_quicklog_pref(item_key, picked_rec, rec_portion_label, float(rec_mult))
-                _one_click_log(picked_rec, portion_label=rec_portion_label, mult=float(rec_mult))
-                st.success("Logged!")
-                st.rerun()
+            with rcols[1]:
+                if cb("⚡ Log selected", key="log_rec", role="log") and picked_rec:
+                    r = lookup.get(picked_rec)
+                    item_key = str((r.get("_key") if r is not None else None) or picked_rec.strip().lower())
+                    _set_quicklog_pref(item_key, picked_rec, rec_portion_label, float(rec_mult))
+                    _one_click_log(picked_rec, portion_label=rec_portion_label, mult=float(rec_mult))
+                    st.success("Logged!")
+                    st.rerun()
 
         st.divider()
 
@@ -1799,7 +1969,7 @@ with tab_add:
             fav_key = selected_item.strip().lower()
             is_fav = conn.execute("SELECT 1 FROM favourites WHERE item_key = ?", (fav_key,)).fetchone() is not None
             fav_label = "⭐ Unfavourite" if is_fav else "☆ Favourite"
-            if st.button(fav_label, key="fav_toggle"):
+            if cb(fav_label, key="fav_toggle"):
                 if is_fav:
                     conn.execute("DELETE FROM favourites WHERE item_key = ?", (fav_key,))
                 else:
@@ -1832,7 +2002,7 @@ with tab_add:
                 p_in = op.number_input("Protein g/100g", min_value=0.0, max_value=100.0, value=safe_float(protein100, 0.0), step=0.5)
                 c_in = oc.number_input("Carbs g/100g", min_value=0.0, max_value=200.0, value=safe_float(carbs100, 0.0), step=0.5)
                 f_in = of.number_input("Fat g/100g", min_value=0.0, max_value=100.0, value=safe_float(fat100, 0.0), step=0.5)
-                if st.button("Save macro override"):
+                if cb("Save macro override"):
                     upsert_macro_override(conn, item_key, p_in, c_in, f_in)
                     st.success("Saved macro override.")
                     st.rerun()
@@ -1902,7 +2072,7 @@ with tab_add:
             prev[3].metric("Protein", f"{(p_g or 0):.0f} g")
             prev[4].metric("Carbs/Fat", f"{(c_g or 0):.0f}g / {(f_g or 0):.0f}g")
 
-            if st.button("Log to diary", type="primary"):
+            if cb("Log to diary", type="primary"):
                 add_diary_entry(
                     conn,
                     entry_date=entry_date,
@@ -1932,7 +2102,7 @@ with tab_recipes:
         new_name = st.text_input("Recipe name", key="recipe_name")
         new_servings = st.number_input("Servings", min_value=1.0, max_value=100.0, value=4.0, step=1.0)
         new_notes = st.text_area("Notes (optional)", key="recipe_notes")
-        if st.button("Create recipe"):
+        if cb("Create recipe", role="create"):
             if not new_name.strip():
                 st.warning("Please enter a recipe name.")
             else:
@@ -1979,7 +2149,7 @@ with tab_recipes:
 
                 ec1, ec2 = st.columns([1, 1])
                 with ec1:
-                    if st.button("Save changes", key=f"btn_save_recipe_{selected_recipe_id}"):
+                    if cb("Save changes", key=f"btn_save_recipe_{selected_recipe_id}"):
                         if not edit_name.strip():
                             st.warning("Recipe name cannot be blank.")
                         else:
@@ -1994,7 +2164,7 @@ with tab_recipes:
                         value=dup_name_default,
                         key=f"dup_recipe_name_{selected_recipe_id}",
                     )
-                    if st.button("Duplicate recipe", key=f"btn_dup_recipe_{selected_recipe_id}"):
+                    if cb("Duplicate recipe", key=f"btn_dup_recipe_{selected_recipe_id}"):
                         if not dup_name.strip():
                             st.warning("Please enter a name for the duplicated recipe.")
                         else:
@@ -2045,7 +2215,7 @@ with tab_recipes:
                     rgrams,
                 )
 
-                if st.button("Add to recipe", type="primary"):
+                if cb("Add to recipe", type="primary", role="fav"):
                     add_recipe_item(
                         conn,
                         selected_recipe_id,
@@ -2082,7 +2252,7 @@ with tab_recipes:
                 with st.expander("Delete ingredient"):
                     rid_list = items_df["id"].tolist()
                     del_id = st.selectbox("Ingredient id", options=rid_list, key="del_recipe_item")
-                    if st.button("Delete ingredient", key="btn_del_recipe_item"):
+                    if cb("Delete ingredient", key="btn_del_recipe_item"):
                         delete_recipe_item(conn, int(del_id))
                         st.success("Deleted.")
                         st.rerun()
@@ -2097,7 +2267,7 @@ with tab_recipes:
             with ld3:
                 servings_eaten = st.number_input("Servings eaten", min_value=0.1, max_value=50.0, value=1.0, step=0.5)
 
-            if st.button("Log recipe to diary", type="primary", key="btn_log_recipe"):
+            if cb("Log recipe to diary", type="primary", key="btn_log_recipe"):
                 if servings <= 0:
                     st.warning("Recipe servings must be > 0.")
                 else:
@@ -2122,7 +2292,7 @@ with tab_recipes:
                     st.rerun()
 
             with st.expander("Delete recipe"):
-                if st.button("Delete this recipe", type="secondary"):
+                if cb("Delete this recipe", type="secondary"):
                     delete_recipe(conn, selected_recipe_id)
                     st.success("Deleted recipe.")
                     st.rerun()
@@ -2140,7 +2310,7 @@ with tab_saved:
         st.write("**Create saved meal**")
         sm_name = st.text_input("Name", key="sm_name")
         sm_meal = st.selectbox("Default meal", options=MEALS, index=1, key="sm_meal")
-        if st.button("Create saved meal"):
+        if cb("Create saved meal"):
             if not sm_name.strip():
                 st.warning("Please enter a name.")
             else:
@@ -2192,7 +2362,7 @@ with tab_saved:
                     sm_grams,
                 )
 
-                if st.button("Add item", key="btn_add_sm"):
+                if cb("Add item", key="btn_add_sm"):
                     add_saved_meal_item(
                         conn,
                         chosen_id,
@@ -2219,7 +2389,7 @@ with tab_saved:
             with l3:
                 scale = st.number_input("Scale (e.g., 1.0 = as saved)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
 
-            if st.button("Log to diary", type="primary", key="btn_log_sm"):
+            if cb("Log to diary", type="primary", key="btn_log_sm"):
                 items = read_saved_meal_items(conn, chosen_id)
                 if items.empty:
                     st.warning("Saved meal has no items.")
@@ -2242,7 +2412,7 @@ with tab_saved:
                     st.rerun()
 
             with st.expander("Delete saved meal"):
-                if st.button("Delete this saved meal", type="secondary", key="btn_del_sm"):
+                if cb("Delete this saved meal", type="secondary", key="btn_del_sm"):
                     delete_saved_meal(conn, chosen_id)
                     st.success("Deleted.")
                     st.rerun()
@@ -2316,7 +2486,7 @@ with tab_barcode:
         pc[2].metric("Carbs", f"{(c_g or 0):.1f} g")
         pc[3].metric("Fat", f"{(f_g or 0):.1f} g")
 
-        if st.button("Log barcode food", type="primary"):
+        if cb("Log barcode food", type="primary"):
             add_diary_entry(
                 conn,
                 log_date,
@@ -2344,7 +2514,7 @@ with tab_weight:
     with w1:
         w_date = st.date_input("Date", value=date.today(), key="w_date")
         w_val = st.number_input("Weight (kg)", min_value=0.0, max_value=500.0, value=75.0, step=0.1)
-        if st.button("Save weight"):
+        if cb("Save weight"):
             conn.execute(
                 """
                 INSERT INTO weights(entry_date, weight_kg, created_at)
@@ -2616,7 +2786,7 @@ with st.expander("Backup / restore (JSON — works on iPhone)"):
         key="restore_json",
     )
     confirm_json = st.checkbox("Yes, overwrite the current diary with this JSON backup", value=False, key="confirm_restore_json")
-    if uploaded_json and confirm_json and st.button("Restore JSON backup now", type="primary", key="btn_restore_json"):
+    if uploaded_json and confirm_json and cb("Restore JSON backup now", type="primary", key="btn_restore_json"):
         try:
             data = json.loads(uploaded_json.getvalue().decode("utf-8"))
             restore_json_backup(conn, data)
@@ -2658,7 +2828,7 @@ with st.expander("Backup / restore your full diary (SQLite file)"):
     )
     uploaded_db = st.file_uploader("Upload calorie_diary.sqlite", type=["sqlite", "db"], key="restore_sqlite")
     confirm = st.checkbox("Yes, overwrite the current diary with this backup", value=False)
-    if uploaded_db and confirm and st.button("Restore backup now", type="primary"):
+    if uploaded_db and confirm and cb("Restore backup now", type="primary"):
         try:
             try:
                 conn.close()
