@@ -1259,38 +1259,34 @@ st.caption("Lose It!-style daily calorie diary using your UK food database + rec
 
 # Sidebar: settings
 with st.sidebar:
-    st.markdown(
-        """
-        <div style="
-            background:#0A84FF;
-            padding:0.6rem 0.9rem;
-            border-radius:12px;
-            color:white;
-            font-weight:800;
-            margin-top:0.5rem;
-        ">
-        🎯 Goal planner
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Apply pending updates BEFORE widgets are instantiated (avoids StreamlitAPIException)
+    if "_pending_daily_calorie_budget" in st.session_state:
+        st.session_state["daily_calorie_budget"] = int(st.session_state.pop("_pending_daily_calorie_budget"))
 
+    # Ensure the budget key exists so widgets can bind to it
+    if "daily_calorie_budget" not in st.session_state:
+        st.session_state["daily_calorie_budget"] = 2000
+    banner("⚙️ Settings", "help")
+    xlsx_path = st.text_input("Food database (xlsx)", value=DEFAULT_DB_PATH)
+    daily_budget = st.number_input("Daily calorie budget", min_value=0, max_value=20000, step=50, key="daily_calorie_budget")
+
+
+    banner("🎯 Goal planner", "help")
     st.caption("Estimate a daily calorie target to reach a goal weight by a chosen date.")
 
-    sex = st.radio("Sex", ["Female", "Male"], horizontal=True)
-    age = st.number_input("Age", min_value=16, max_value=100, value=40)
-    height_cm = st.number_input("Height (cm)", min_value=120, max_value=220, value=170)
+    gp_col1, gp_col2 = st.columns(2)
+    with gp_col1:
+        gp_sex = st.selectbox("Sex", ["Female", "Male"], index=0, key="gp_sex")
+    with gp_col2:
+        gp_age = st.number_input("Age", min_value=16, max_value=100, value=40, step=1, key="gp_age")
 
-    start_weight = st.number_input("Current weight (kg)", min_value=30.0, max_value=300.0, value=80.0)
-    target_weight = st.number_input("Target weight (kg)", min_value=30.0, max_value=300.0, value=75.0)
+    gp_height_cm = st.number_input("Height (cm)", min_value=120, max_value=220, value=170, step=1, key="gp_height_cm")
+    gp_start_kg = st.number_input("Start weight (kg)", min_value=30.0, max_value=300.0, value=80.0, step=0.1, key="gp_start_kg")
+    gp_target_kg = st.number_input("Target weight (kg)", min_value=30.0, max_value=300.0, value=75.0, step=0.1, key="gp_target_kg")
 
-    target_date = st.date_input(
-        "Target date",
-        value=date.today().replace(year=date.today().year + 1),
-        min_value=date.today(),
-    )
+    gp_target_date = st.date_input("Target date", value=date.today() + timedelta(days=90), min_value=date.today(), key="gp_target_date")
 
-    activity = st.selectbox(
+    gp_activity = st.selectbox(
         "Lifestyle / activity level",
         [
             "Sedentary (little or no exercise)",
@@ -1299,48 +1295,47 @@ with st.sidebar:
             "Very active (6–7 days/week)",
         ],
         index=1,
+        key="gp_activity",
     )
 
-    activity_factor = {
+    gp_factor = {
         "Sedentary (little or no exercise)": 1.2,
         "Lightly active (1–3 days/week)": 1.375,
         "Moderately active (3–5 days/week)": 1.55,
         "Very active (6–7 days/week)": 1.725,
-    }[activity]
+    }[gp_activity]
 
-    days = (target_date - date.today()).days
-    weight_to_lose = start_weight - target_weight
+    gp_days = (gp_target_date - date.today()).days
+    gp_kg_to_lose = float(gp_start_kg) - float(gp_target_kg)
 
-    if days > 0 and weight_to_lose > 0:
+    gp_suggested = None
+    if gp_days > 0 and gp_kg_to_lose > 0:
         # Mifflin–St Jeor BMR
-        if sex == "Male":
-            bmr = 10 * start_weight + 6.25 * height_cm - 5 * age + 5
+        if gp_sex == "Male":
+            gp_bmr = 10 * float(gp_start_kg) + 6.25 * float(gp_height_cm) - 5 * float(gp_age) + 5
         else:
-            bmr = 10 * start_weight + 6.25 * height_cm - 5 * age - 161
+            gp_bmr = 10 * float(gp_start_kg) + 6.25 * float(gp_height_cm) - 5 * float(gp_age) - 161
 
-        tdee = bmr * activity_factor
-        daily_deficit = (weight_to_lose * 7700) / days
-        suggested_intake = tdee - daily_deficit
+        gp_tdee = gp_bmr * gp_factor
+        gp_daily_deficit = (gp_kg_to_lose * 7700.0) / gp_days
+        gp_suggested = gp_tdee - gp_daily_deficit
 
-        st.markdown("---")
-        st.write(f"**Estimated maintenance:** {int(tdee)} kcal/day")
-        st.write(f"**Required deficit:** {int(daily_deficit)} kcal/day")
-        st.write(f"**Suggested intake:** **{int(suggested_intake)} kcal/day**")
+        st.write(f"**Estimated maintenance:** {int(round(gp_tdee))} kcal/day")
+        st.write(f"**Required deficit:** {int(round(gp_daily_deficit))} kcal/day")
+        st.write(f"**Suggested intake:** **{int(round(gp_suggested))} kcal/day**")
 
-        if daily_deficit > 1000:
-            st.warning("This is an aggressive target. Consider extending the timeline.")
+        if gp_daily_deficit > 1000:
+            st.warning("Aggressive target. Consider extending the timeline.")
+        if gp_suggested < 1200 and gp_sex == "Female":
+            st.warning("Very low target. Consider extending the timeline.")
+        if gp_suggested < 1500 and gp_sex == "Male":
+            st.warning("Very low target. Consider extending the timeline.")
 
-        if st.button("Apply suggested calorie budget"):
-            st.session_state["daily_calorie_budget"] = int(suggested_intake)
-            st.success("Daily calorie budget applied.")
+        if cb("Apply suggested calorie budget", key="btn_apply_gp", role="log"):
+            st.session_state["_pending_daily_calorie_budget"] = int(round(gp_suggested))
+            st.rerun()
     else:
-        st.info("Enter a target date and a lower target weight to calculate a plan.")
-
-
-with st.sidebar:
-    banner("⚙️ Settings", "help")
-    xlsx_path = st.text_input("Food database (xlsx)", value=DEFAULT_DB_PATH)
-    daily_budget = st.number_input("Daily calorie budget", min_value=0, max_value=20000, value=2000, step=50)
+        st.info("Enter a lower target weight and a future target date to calculate a plan.")
 
     banner(" Apple Move", "help")
     st.caption("Optional: log Apple Fitness 'Move' calories as burned calories (with a conservative factor).")
@@ -1612,12 +1607,16 @@ with tab_diary:
         render_dataframe(disp2, table_key="diary_entries", header_color=BRIGHT_PALETTE["entries"], height=360, hide_index=True, width='stretch')
 
         with st.expander("Delete an entry"):
-            entry_ids = display["id"].tolist()
-            to_delete = st.selectbox("Select entry id", options=entry_ids)
-            if cb("Delete", type="secondary"):
-                delete_diary_entry(conn, int(to_delete))
-                st.success("Deleted.")
-                st.rerun()
+            entry_ids = [int(x) for x in display["id"].tolist()] if (not display.empty and "id" in display.columns) else []
+            if not entry_ids:
+                st.caption("No entries to delete for this date/meal filter.")
+            else:
+                to_delete = st.selectbox("Select entry id", options=entry_ids, key="diary_delete_id")
+                confirm_del = st.checkbox("Confirm delete", value=False, key="diary_delete_confirm")
+                if cb("Delete entry", key="diary_delete_btn", role="delete") and confirm_del:
+                    delete_diary_entry(conn, int(to_delete))
+                    st.success("Deleted.")
+                    st.rerun()
 
 
 # ----------------------------
@@ -1822,7 +1821,7 @@ with tab_add:
                 pf = portion_options_for_item(portions_df, picked_fav)
                 if not pf.empty:
                     pf = pf.copy()
-                    pf["_label"] = pf.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g", axis=1)
+                    pf["_label"] = pf.apply(lambda x: f"{x['Portion']} • {x['Portion (g/ml)']}g • {safe_float(x.get('Energy (kcal) per portion/item'), 0.0):.0f} kcal", axis=1)
                     labels = pf["_label"].tolist()
                     default_idx = labels.index(pref_label) if (pref_label in labels) else 0
                     fav_portion_label = st.selectbox(
@@ -2151,7 +2150,7 @@ with tab_add:
             prev[3].metric("Protein", f"{(p_g or 0):.0f} g")
             prev[4].metric("Carbs/Fat", f"{(c_g or 0):.0f}g / {(f_g or 0):.0f}g")
 
-            if cb("Log to diary", type="primary"):
+            if cb("Log to diary", type="primary", key="btn_log_to_diary_addfood", role="log"):
                 add_diary_entry(
                     conn,
                     entry_date=entry_date,
@@ -2806,22 +2805,7 @@ Use **Backup / restore (JSON — works on iPhone)** at the bottom:
 Tip: store the JSON file in iCloud Drive / OneDrive so you can restore from phone if needed.
         """
     )
-    st.subheader("🎯 Goal planner")
 
-    st.markdown(
-    """
-The Goal Planner helps you estimate a **daily calorie target** needed to reach a
-desired weight by a chosen **target date**.
-
-**How it works**
-- Estimates your maintenance calories from age, height, weight, sex and activity level
-- Calculates the average daily calorie deficit needed
-- Suggests a realistic daily calorie budget
-
-Use this as a **planning guide**, not a guarantee — real weight loss varies due to
-water weight, activity changes, sleep, and adherence.
-"""
-    )
 
 # ----------------------------
 # HISTORY EXPORT (kept simple)
