@@ -1355,9 +1355,33 @@ with st.sidebar:
     fat_target = st.number_input("Fat target (g)", min_value=0, max_value=1000, value=70, step=5)
 
     show_kj = st.toggle("Also show kJ (approx)", value=False)
-    st.divider()
-    st.caption("Diary / recipes / saved meals stored locally:")
-    st.code(SQLITE_PATH)
+
+    banner("🧹 New year reset", "barcode")
+    st.caption("Clear daily logs and charts (keeps favourites, recipes, saved meals, food DB).")
+
+    ny_confirm = st.checkbox("Yes — clear all diary food + burned entries", key="ny_confirm")
+    ny_clear_weight = st.checkbox("Also clear weight log", value=False, key="ny_clear_weight")
+
+    if cb("Clear logs now", key="btn_clear_logs", role="delete", type="secondary"):
+        if not ny_confirm:
+            st.warning("Tick the confirmation box first.")
+        else:
+            try:
+                import sqlite3
+                with sqlite3.connect(SQLITE_PATH) as _conn:
+                    _conn.execute("DELETE FROM diary_entries")
+                    _conn.execute("DELETE FROM burn_entries")
+                    if ny_clear_weight:
+                        _conn.execute("DELETE FROM weights")
+                    _conn.commit()
+                st.success("Cleared. Starting fresh!")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Couldn't clear logs: {_e}")
+
+        st.divider()
+        st.caption("Diary / recipes / saved meals stored locally:")
+        st.code(SQLITE_PATH)
 
 # Load data
 try:
@@ -2151,21 +2175,43 @@ with tab_add:
             prev[4].metric("Carbs/Fat", f"{(c_g or 0):.0f}g / {(f_g or 0):.0f}g")
 
             if cb("Log to diary", type="primary", key="btn_log_to_diary_addfood", role="log"):
-                add_diary_entry(
-                    conn,
-                    entry_date=entry_date,
-                    meal=meal,
-                    item=selected_item,
-                    grams=float(grams),
-                    kcal_per_100g=float(kcal100),
-                    kcal=float(kcal),
-                    protein_g=p_g,
-                    carbs_g=c_g,
-                    fat_g=f_g,
-                    source=source,
-                )
-                st.success("Logged!")
-                st.rerun()
+                try:
+                    add_diary_entry(
+                        conn,
+                        entry_date=entry_date,
+                        meal=meal,
+                        item=selected_item,
+                        grams=float(grams),
+                        kcal_per_100g=float(kcal100),
+                        kcal=float(kcal),
+                        protein_g=p_g,
+                        carbs_g=c_g,
+                        fat_g=f_g,
+                        source=source,
+                    )
+                    conn.commit()  # <-- add this (important if add_diary_entry doesn't commit internally)
+                    st.success("Logged!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't log to diary: {e}")
+                    st.exception(e)
+
+#            if cb("Log to diary", type="primary", key="btn_log_to_diary_addfood", role="log"):
+#                add_diary_entry(
+#                    conn,
+#                    entry_date=entry_date,
+#                    meal=meal,
+#                    item=selected_item,
+#                    grams=float(grams),
+#                    kcal_per_100g=float(kcal100),
+#                    kcal=float(kcal),
+#                    protein_g=p_g,
+#                    carbs_g=c_g,
+#                    fat_g=f_g,
+#                    source=source,
+#                )
+#                st.success("Logged!")
+#                st.rerun()
 
 
 # ----------------------------
