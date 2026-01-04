@@ -1528,7 +1528,7 @@ with tab_diary:
         macro_cols[1].metric("Carbs", f"{total_c:.0f}g", delta=f"{total_c-carbs_target:+.0f}g")
         macro_cols[2].metric("Fat", f"{total_f:.0f}g", delta=f"{total_f-fat_target:+.0f}g")
 
-    banner("🧾 Entries", "entries")
+    banner("🧾 Daily exercise and burn calories", "entries")
 
     # Log burned calories
     with st.expander("Log calories burned (exercise / activity / daily living)"):
@@ -1617,15 +1617,20 @@ with tab_diary:
                 "grams": "Grams",
                 "kcal_per_100g": "kcal/100g",
                 "kcal": "kcal",
-                "protein_g": "Protein (g)",
-                "carbs_g": "Carbs (g)",
-                "fat_g": "Fat (g)",
+#########################################################################
+##### DC edited 4/1/26 to remove protein, carbs and fat from tables #####
+#########################################################################
+#                "protein_g": "Protein (g)",
+#                "carbs_g": "Carbs (g)",
+#                "fat_g": "Fat (g)",
             }
         )
 
-        cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)", "source"]
+#        cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)", "source"]
+        cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "source"]
         disp2 = display[cols].copy()
-        for c in ["Grams","kcal/100g","kcal","Protein (g)","Carbs (g)","Fat (g)"]:
+#        for c in ["Grams","kcal/100g","kcal","Protein (g)","Carbs (g)","Fat (g)"]:
+        for c in ["Grams","kcal/100g","kcal"]:
             if c in disp2.columns:
                 disp2[c] = pd.to_numeric(disp2[c], errors="coerce").fillna(0).round(0).astype(int)
         render_dataframe(disp2, table_key="diary_entries", header_color=BRIGHT_PALETTE["entries"], height=360, hide_index=True, width='stretch')
@@ -1661,7 +1666,7 @@ with tab_add:
     with ql1:
         quick_date = st.date_input("Quick log date", value=date.today(), key="quick_log_date")
     with ql2:
-        quick_meal = st.selectbox("Quick log meal", options=MEALS, index=1, key="quick_log_meal")
+        quick_meal = st.selectbox("Quick log meal", options=MEALS, index=0, key="quick_log_meal")
     with ql3:
         ql_mode = st.radio(
             "Default one-click amount",
@@ -2113,7 +2118,7 @@ with tab_add:
             with c1:
                 entry_date = st.date_input("Log date", value=date.today(), key="log_date")
             with c2:
-                meal = st.selectbox("Meal", options=MEALS, index=1)
+                meal = st.selectbox("Meal", options=MEALS, index=0)
             with c3:
                 mode = st.radio("How much?", options=["Grams", "Typical portion"], horizontal=True)
 
@@ -2226,7 +2231,7 @@ with tab_recipes:
         new_name = st.text_input("Recipe name", key="recipe_name")
         new_servings = st.number_input("Servings", min_value=1.0, max_value=100.0, value=4.0, step=1.0)
         new_notes = st.text_area("Notes (optional)", key="recipe_notes")
-        if cb("Create recipe", role="create"):
+        if cb("Create recipe", key="btn_create_recipe", role="create"):
             if not new_name.strip():
                 st.warning("Please enter a recipe name.")
             else:
@@ -2359,17 +2364,22 @@ with tab_recipes:
             if items_df.empty:
                 st.info("No ingredients yet.")
             else:
-                ridf = items_df[["id", "item", "grams", "kcal", "protein_g", "carbs_g", "fat_g"]].rename(
+#########################################################################
+##### DC edited 4/1/26 to remove protein, carbs and fat from tables #####
+#########################################################################
+#                ridf = items_df[["id", "item", "grams", "kcal", "protein_g", "carbs_g", "fat_g"]].rename(
+                ridf = items_df[["id", "item", "grams", "kcal",]].rename(
                     columns={
                         "item": "Item",
                         "grams": "Grams",
                         "kcal": "kcal",
-                        "protein_g": "Protein (g)",
-                        "carbs_g": "Carbs (g)",
-                        "fat_g": "Fat (g)",
+#                        "protein_g": "Protein (g)",
+#                        "carbs_g": "Carbs (g)",
+#                        "fat_g": "Fat (g)",
                     }
                 ).copy()
-                for c in ["Grams", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)"]:
+#                for c in ["Grams", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)"]:
+                for c in ["Grams", "kcal"]:
                     if c in ridf.columns:
                         ridf[c] = pd.to_numeric(ridf[c], errors="coerce").fillna(0).round(0).astype(int)
                 render_dataframe(ridf, table_key="recipe_items", header_color=BRIGHT_PALETTE["recipes"], height=260, hide_index=True, width='stretch')
@@ -2380,6 +2390,7 @@ with tab_recipes:
                         delete_recipe_item(conn, int(del_id))
                         st.success("Deleted.")
                         st.rerun()
+#########################################################################
 
             st.divider()
             st.write("**Log this recipe**")
@@ -2638,7 +2649,7 @@ with tab_weight:
     with w1:
         w_date = st.date_input("Date", value=date.today(), key="w_date")
         w_val = st.number_input("Weight (kg)", min_value=0.0, max_value=500.0, value=75.0, step=0.1)
-        if cb("Save weight"):
+        if cb("Save weight", key="btn_save_weight", role="log"):
             conn.execute(
                 """
                 INSERT INTO weights(entry_date, weight_kg, created_at)
