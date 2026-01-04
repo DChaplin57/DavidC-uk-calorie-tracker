@@ -1265,10 +1265,15 @@ with st.sidebar:
 
     # Ensure the budget key exists so widgets can bind to it
     if "daily_calorie_budget" not in st.session_state:
-        st.session_state["daily_calorie_budget"] = 2000
+#################################################################
+##### DC 4/1/26 Calculate session calorie requirements      #####
+##### then change this value so it persists across sessions #####
+##### Default = 2000.                                       #####
+#################################################################
+        st.session_state["daily_calorie_budget"] = 1941 # Calculated from sidebar 1/1/26. 
     banner("⚙️ Settings", "help")
     xlsx_path = st.text_input("Food database (xlsx)", value=DEFAULT_DB_PATH)
-    daily_budget = st.number_input("Daily calorie budget", min_value=0, max_value=20000, step=50, key="daily_calorie_budget")
+    daily_budget = st.number_input("Daily calorie budget (default = 2000)", min_value=0, max_value=20000, step=50, key="daily_calorie_budget")
 
 
     banner("🎯 Goal planner", "help")
