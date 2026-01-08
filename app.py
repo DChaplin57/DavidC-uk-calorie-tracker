@@ -1238,7 +1238,7 @@ if app_pass:
         st.session_state["authed"] = False
 
     if not st.session_state["authed"]:
-        st.title("🔒 UK Calorie Tracker")
+        st.title("🔒 David's Calorie Tracker")
         st.write("Enter your passcode to continue.")
 
         with st.form("passcode_form"):
@@ -1254,7 +1254,7 @@ if app_pass:
 
         st.stop()
 
-st.title("🥗 UK Calorie Tracker")
+st.title("🥗 David's Calorie Tracker")
 st.caption("Lose It!-style daily calorie diary using your UK food database + recipes, saved meals, barcodes, macros, weight trends.")
 
 # Sidebar: settings
@@ -1265,11 +1265,12 @@ with st.sidebar:
 
     # Ensure the budget key exists so widgets can bind to it
     if "daily_calorie_budget" not in st.session_state:
-#################################################################
-##### DC 4/1/26 Calculate session calorie requirements      #####
-##### then change this value so it persists across sessions #####
-##### Default = 2000.                                       #####
-#################################################################
+ 
+    # ----------------------------
+    # DC 4/1/26 Calculate session calorie requirements
+    # then change this value so it persists across sessions
+    # Default = 2000.
+    # ----------------------------
         st.session_state["daily_calorie_budget"] = 1941 # Calculated from sidebar 1/1/26. 
     banner("⚙️ Settings", "help")
     xlsx_path = st.text_input("Food database (xlsx)", value=DEFAULT_DB_PATH)
@@ -1289,7 +1290,7 @@ with st.sidebar:
     gp_start_kg = st.number_input("Start weight (kg)", min_value=30.0, max_value=300.0, value=80.0, step=0.1, key="gp_start_kg")
     gp_target_kg = st.number_input("Target weight (kg)", min_value=30.0, max_value=300.0, value=75.0, step=0.1, key="gp_target_kg")
 
-    gp_target_date = st.date_input("Target date", value=date.today() + timedelta(days=90), min_value=date.today(), key="gp_target_date")
+    gp_target_date = st.date_input("Target date", value=date.today() + timedelta(days=90), min_value=date.today(), key="gp_target_date", format="DD/MM/YYYY")
 
     gp_activity = st.selectbox(
         "Lifestyle / activity level",
@@ -1449,20 +1450,51 @@ lookup = build_lookup(ingredients_df)
 with tab_diary:
     col1, col2 = st.columns([1, 2])
     with col1:
-        diary_date = st.date_input("Date", value=date.today())
+        diary_date = st.date_input("Date", value=date.today(), format="DD/MM/YYYY")
         meal_filter = st.selectbox("Meal", options=["All"] + MEALS, index=0)
 
-        st.divider()
-        banner("⚡ Quick actions", "quick")
-        # Copy from another day
-        st.write("**Copy from another day**")
-        copy_from = st.date_input("Copy entries from", value=diary_date - timedelta(days=1), key="copy_from_date")
-        if cb(f"Copy {copy_from.isoformat()} → {diary_date.isoformat()}", key="btn_copy_from"):
-            src_entries = read_entries(conn, copy_from)
-            if src_entries.empty:
-                st.warning(f"No entries on {copy_from.isoformat()}.")
+    st.divider()
+    banner("⚡ Quick actions", "quick")
+
+    # Copy from another day
+    st.write("**Copy from another day**")
+    copy_from = st.date_input(
+        "Copy entries from",
+        value=diary_date - timedelta(days=1),
+        key="copy_from_date",
+     format="DD/MM/YYYY",
+    )
+
+    # Read source entries first so we can offer meal selection
+    src_entries = read_entries(conn, copy_from)
+
+    if src_entries.empty:
+        st.caption(f"No entries on {copy_from.strftime('%d/%m/%Y')}.")
+        meals_to_copy = []
+    else:
+        meal_options = sorted({str(m) for m in src_entries["meal"].dropna().unique()})
+        meals_to_copy = st.multiselect(
+            "Meals to copy",
+            options=meal_options,
+            # default=meal_options,  # preserves current behaviour unless you change it
+            key="copy_meals_to_copy",
+            help="Select which meals from the source day to copy.",
+        )
+
+    copy_label = f"Copy {copy_from.strftime('%d/%m/%Y')} → {diary_date.strftime('%d/%m/%Y')}"
+
+    if cb(copy_label, key="btn_copy_from", role="log"):
+        if src_entries.empty:
+            st.warning(f"No entries on {copy_from.strftime('%d/%m/%Y')}.")
+        elif not meals_to_copy:
+            st.warning("Select at least one meal to copy.")
+        else:
+            filtered = src_entries[src_entries["meal"].astype(str).isin(meals_to_copy)].copy()
+
+            if filtered.empty:
+                st.warning("No entries match the selected meals.")
             else:
-                for _, e in src_entries.iterrows():
+                for _, e in filtered.iterrows():
                     add_diary_entry(
                         conn,
                         entry_date=diary_date,
@@ -1474,32 +1506,36 @@ with tab_diary:
                         protein_g=None if pd.isna(e.get("protein_g")) else float(e.get("protein_g")),
                         carbs_g=None if pd.isna(e.get("carbs_g")) else float(e.get("carbs_g")),
                         fat_g=None if pd.isna(e.get("fat_g")) else float(e.get("fat_g")),
-                        source=(str(e.get("source") or "") + f" | copied:{copy_from.isoformat()}").strip(" |"),
+                        source=(str(e.get("source") or "") + f" | copied:{copy_from.strftime('%d/%m/%Y')}").strip(" |"),
                     )
-                st.success(f"Copied {len(src_entries)} entries from {copy_from.isoformat()}.")
+
+                st.success(
+                    f"Copied {len(filtered)} entries ({', '.join(meals_to_copy)}) from {copy_from.strftime('%d/%m/%Y')}."
+                )
                 st.rerun()
 
-        # Quick add calories
-        with st.expander("Quick-add calories"):
-            qa_meal = st.selectbox("Meal", options=MEALS, index=3, key="qa_meal")
-            qa_kcal = st.number_input("Calories to add", min_value=0.0, max_value=5000.0, value=100.0, step=10.0, key="qa_kcal")
-            qa_note = st.text_input("Note (optional)", placeholder="e.g., Coffee + biscuit", key="qa_note")
-            if cb("Add quick calories", key="qa_btn"):
-                add_diary_entry(
-                    conn,
-                    entry_date=diary_date,
-                    meal=qa_meal,
-                    item=f"Quick add: {qa_note}" if qa_note.strip() else "Quick add",
-                    grams=0.0,
-                    kcal_per_100g=0.0,
-                    kcal=float(qa_kcal),
-                    protein_g=None,
-                    carbs_g=None,
-                    fat_g=None,
-                    source="quick-add",
-                )
-                st.success("Added.")
-                st.rerun()
+    # Quick add calories
+    banner("🧾 Quick add calories", "entries")
+    with st.expander("Quick-add calories"):
+        qa_meal = st.selectbox("Meal", options=MEALS, index=0, key="qa_meal")
+        qa_kcal = st.number_input("Calories to add", min_value=0.0, max_value=5000.0, value=100.0, step=10.0, key="qa_kcal")
+        qa_note = st.text_input("Note (optional)", placeholder="e.g., Coffee + biscuit", key="qa_note")
+        if cb("Add quick calories", key="qa_btn"):
+            add_diary_entry(
+                conn,
+                entry_date=diary_date,
+                meal=qa_meal,
+                item=f"Quick add: {qa_note}" if qa_note.strip() else "Quick add",
+                grams=0.0,
+                kcal_per_100g=0.0,
+                kcal=float(qa_kcal),
+                protein_g=None,
+                carbs_g=None,
+                fat_g=None,
+                source="quick-add",
+            )
+            st.success("Added.")
+            st.rerun()
 
     entries = read_entries(conn, diary_date)
     burn = read_burn_entries(conn, diary_date)
@@ -1622,35 +1658,66 @@ with tab_diary:
                 "grams": "Grams",
                 "kcal_per_100g": "kcal/100g",
                 "kcal": "kcal",
-#########################################################################
-##### DC edited 4/1/26 to remove protein, carbs and fat from tables #####
-#########################################################################
-#                "protein_g": "Protein (g)",
-#                "carbs_g": "Carbs (g)",
-#                "fat_g": "Fat (g)",
+
+                # ----------------------------
+                # DC edited 4/1/26 to remove protein, carbs and fat from table
+                # ----------------------------
+                # "protein_g": "Protein (g)",
+                # "carbs_g": "Carbs (g)",
+                # "fat_g": "Fat (g)",
+                # ----------------------------
             }
         )
 
-#        cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)", "source"]
+        # DC cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)", "source"]
         cols = ["id", "Meal", "Item", "Grams", "kcal/100g", "kcal", "source"]
         disp2 = display[cols].copy()
-#        for c in ["Grams","kcal/100g","kcal","Protein (g)","Carbs (g)","Fat (g)"]:
+        # DC for c in ["Grams","kcal/100g","kcal","Protein (g)","Carbs (g)","Fat (g)"]:
         for c in ["Grams","kcal/100g","kcal"]:
             if c in disp2.columns:
                 disp2[c] = pd.to_numeric(disp2[c], errors="coerce").fillna(0).round(0).astype(int)
         render_dataframe(disp2, table_key="diary_entries", header_color=BRIGHT_PALETTE["entries"], height=360, hide_index=True, width='stretch')
 
-        with st.expander("Delete an entry"):
-            entry_ids = [int(x) for x in display["id"].tolist()] if (not display.empty and "id" in display.columns) else []
-            if not entry_ids:
+        banner("🗑 Delete meal entries", "log")
+        with st.expander("Delete entries"):
+            if display.empty or "id" not in display.columns:
                 st.caption("No entries to delete for this date/meal filter.")
             else:
-                to_delete = st.selectbox("Select entry id", options=entry_ids, key="diary_delete_id")
+                options = []
+                for _, r in display.iterrows():
+                    entry_id = int(r["id"])
+
+                    meal_txt = str(r["Meal"]) if "Meal" in display.columns else ""
+                    item_txt = str(r["Item"]) if "Item" in display.columns else ""
+                    grams_txt = f'{float(r["grams"]):.0f} g' if "grams" in display.columns and pd.notna(r.get("grams")) else ""
+                    kcal_txt = f'{float(r["kcal"]):.0f} kcal' if "kcal" in display.columns and pd.notna(r.get("kcal")) else ""
+
+                    left = ": ".join([x for x in [meal_txt, item_txt] if x])
+                    right = ", ".join([x for x in [grams_txt, kcal_txt] if x])
+                    label = f"{left} ({right})" if right else left or f"Entry {entry_id}"
+
+                    options.append((label, entry_id))
+
+                selected = st.multiselect(
+                    "Select entries to delete",
+                    options=options,
+                    format_func=lambda x: x[0],
+                    key="diary_delete_multi",
+                )
+                selected_ids = [eid for _, eid in selected]
+
                 confirm_del = st.checkbox("Confirm delete", value=False, key="diary_delete_confirm")
-                if cb("Delete entry", key="diary_delete_btn", role="delete") and confirm_del:
-                    delete_diary_entry(conn, int(to_delete))
-                    st.success("Deleted.")
-                    st.rerun()
+
+                if cb("Delete selected entries", key="diary_delete_btn", role="delete"):
+                    if not selected_ids:
+                        st.warning("Select at least one entry to delete.")
+                    elif not confirm_del:
+                        st.warning("Tick the confirmation box first.")
+                    else:
+                        for eid in selected_ids:
+                            delete_diary_entry(conn, int(eid))
+                        st.success(f"Deleted {len(selected_ids)} entr{'y' if len(selected_ids)==1 else 'ies'}.")
+                        st.rerun()
 
 
 # ----------------------------
@@ -1669,7 +1736,7 @@ with tab_add:
     # --- Shared quick-log controls (apply to both Favourites + Recents) ---
     ql1, ql2, ql3 = st.columns([1, 1, 2])
     with ql1:
-        quick_date = st.date_input("Quick log date", value=date.today(), key="quick_log_date")
+        quick_date = st.date_input("Quick log date", value=date.today(), key="quick_log_date", format="DD/MM/YYYY")
     with ql2:
         quick_meal = st.selectbox("Quick log meal", options=MEALS, index=0, key="quick_log_meal")
     with ql3:
@@ -2121,7 +2188,7 @@ with tab_add:
 
             c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
-                entry_date = st.date_input("Log date", value=date.today(), key="log_date")
+                entry_date = st.date_input("Log date", value=date.today(), key="log_date", format="DD/MM/YYYY")
             with c2:
                 meal = st.selectbox("Meal", options=MEALS, index=0)
             with c3:
@@ -2369,21 +2436,21 @@ with tab_recipes:
             if items_df.empty:
                 st.info("No ingredients yet.")
             else:
-#########################################################################
-##### DC edited 4/1/26 to remove protein, carbs and fat from tables #####
-#########################################################################
-#                ridf = items_df[["id", "item", "grams", "kcal", "protein_g", "carbs_g", "fat_g"]].rename(
+                # ----------------------------
+                # DC edited 4/1/26 to remove protein, carbs and fat from tables
+                # ----------------------------
+                # ridf = items_df[["id", "item", "grams", "kcal", "protein_g", "carbs_g", "fat_g"]].rename(
                 ridf = items_df[["id", "item", "grams", "kcal",]].rename(
                     columns={
                         "item": "Item",
                         "grams": "Grams",
                         "kcal": "kcal",
-#                        "protein_g": "Protein (g)",
-#                        "carbs_g": "Carbs (g)",
-#                        "fat_g": "Fat (g)",
+                        # DC "protein_g": "Protein (g)",
+                        # DC "carbs_g": "Carbs (g)",
+                        # "fat_g": "Fat (g)",
                     }
                 ).copy()
-#                for c in ["Grams", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)"]:
+                # DC for c in ["Grams", "kcal", "Protein (g)", "Carbs (g)", "Fat (g)"]:
                 for c in ["Grams", "kcal"]:
                     if c in ridf.columns:
                         ridf[c] = pd.to_numeric(ridf[c], errors="coerce").fillna(0).round(0).astype(int)
@@ -2395,13 +2462,13 @@ with tab_recipes:
                         delete_recipe_item(conn, int(del_id))
                         st.success("Deleted.")
                         st.rerun()
-#########################################################################
+                # ----------------------------
 
             st.divider()
             st.write("**Log this recipe**")
             ld1, ld2, ld3 = st.columns(3)
             with ld1:
-                log_date = st.date_input("Log date", value=date.today(), key="log_recipe_date")
+                log_date = st.date_input("Log date", value=date.today(), key="log_recipe_date", format="DD/MM/YYYY")
             with ld2:
                 log_meal = st.selectbox("Meal", options=MEALS, index=2, key="log_recipe_meal")
             with ld3:
@@ -2522,7 +2589,7 @@ with tab_saved:
             st.write("**Log saved meal**")
             l1, l2, l3 = st.columns(3)
             with l1:
-                log_date = st.date_input("Log date", value=date.today(), key="log_sm_date")
+                log_date = st.date_input("Log date", value=date.today(), key="log_sm_date", format="DD/MM/YYYY")
             with l2:
                 default_meal = saved_df[saved_df["id"] == chosen_id].iloc[0]["meal"]
                 log_meal = st.selectbox("Meal", options=MEALS, index=MEALS.index(default_meal) if default_meal in MEALS else 1, key="log_sm_meal")
@@ -2610,7 +2677,7 @@ with tab_barcode:
         banner("✅ Log this product", "barcode")
         lc1, lc2, lc3 = st.columns(3)
         with lc1:
-            log_date = st.date_input("Log date", value=date.today(), key="bc_date")
+            log_date = st.date_input("Log date", value=date.today(), key="bc_date", format="DD/MM/YYYY")
         with lc2:
             meal = st.selectbox("Meal", options=MEALS, index=3, key="bc_meal")
         with lc3:
@@ -2652,7 +2719,7 @@ with tab_weight:
 
     w1, w2 = st.columns([1, 2])
     with w1:
-        w_date = st.date_input("Date", value=date.today(), key="w_date")
+        w_date = st.date_input("Date", value=date.today(), key="w_date", format="DD/MM/YYYY")
         w_val = st.number_input("Weight (kg)", min_value=0.0, max_value=500.0, value=75.0, step=0.1)
         if cb("Save weight", key="btn_save_weight", role="log"):
             conn.execute(
@@ -2690,9 +2757,9 @@ with tab_trends:
     start = end - timedelta(days=90)
     r1, r2 = st.columns(2)
     with r1:
-        start = st.date_input("From", value=start, key="trend_from")
+        start = st.date_input("From", value=start, key="trend_from", format="DD/MM/YYYY")
     with r2:
-        end = st.date_input("To", value=end, key="trend_to")
+        end = st.date_input("To", value=end, key="trend_to", format="DD/MM/YYYY")
 
     hist = read_entries_range(conn, start, end)
     if hist.empty:
@@ -2873,24 +2940,7 @@ Tip: store the JSON file in iCloud Drive / OneDrive so you can restore from phon
 # HISTORY EXPORT (kept simple)
 # ----------------------------
 st.divider()
-with st.expander("Export diary (CSV)"):
-    h1, h2 = st.columns(2)
-    with h1:
-        exp_start = st.date_input("Export from", value=date.today().replace(day=1), key="exp_from")
-    with h2:
-        exp_end = st.date_input("Export to", value=date.today(), key="exp_to")
-
-    hist = read_entries_range(conn, exp_start, exp_end)
-    if hist.empty:
-        st.info("No entries in this range.")
-    else:
-        csv = hist.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV",
-            data=csv,
-            file_name=f"calorie_diary_{exp_start.isoformat()}_to_{exp_end.isoformat()}.csv",
-            mime="text/csv",
-        )
+banner("💾 Backup and restore", "quick")
 
 with st.expander("Backup / restore (JSON — works on iPhone)"):
     st.info(
@@ -2982,3 +3032,22 @@ with st.expander("Backup / restore your full diary (SQLite file)"):
             st.rerun()
         except Exception as e:
             st.error(f"Restore failed: {e}")
+
+with st.expander("Export diary (CSV)"):
+    h1, h2 = st.columns(2)
+    with h1:
+        exp_start = st.date_input("Export from", value=date.today().replace(day=1), key="exp_from", format="DD/MM/YYYY")
+    with h2:
+        exp_end = st.date_input("Export to", value=date.today(), key="exp_to", format="DD/MM/YYYY")
+
+    hist = read_entries_range(conn, exp_start, exp_end)
+    if hist.empty:
+        st.info("No entries in this range.")
+    else:
+        csv = hist.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download CSV",
+            data=csv,
+            file_name=f"calorie_diary_{exp_start.isoformat()}_to_{exp_end.isoformat()}.csv",
+            mime="text/csv",
+        )
